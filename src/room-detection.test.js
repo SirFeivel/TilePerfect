@@ -17,10 +17,12 @@ import {
   detectRoomAtPixel,
   detectEnvelope,
   detectSpanningWalls,
-  removePolygonMicroBumps,
-  removeStackedWalls,
   preprocessForRoomDetection
 } from './room-detection.js';
+import {
+  removePolygonMicroBumps,
+  removeStackedWalls,
+} from './floor-plan-rules.js';
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -7,11 +7,11 @@ import { svgEl } from "./geometry.js";
 import { pointerToSvgXY } from "./svg-coords.js";
 import { createSurface } from "./surface.js";
 import { getCurrentFloor, deepClone, uuid } from "./core.js";
-import { detectRoomAtPixel, detectEnvelope, detectSpanningWalls, removePolygonMicroBumps, removeStackedWalls, detectWallThickness, preprocessForRoomDetection } from "./room-detection.js";
+import { detectRoomAtPixel, detectEnvelope, detectSpanningWalls, detectWallThickness, preprocessForRoomDetection } from "./room-detection.js";
 import { getWallForEdge, syncFloorWalls, addDoorwayToWall, mergeCollinearWalls, enforceNoParallelWalls, enforceAdjacentPositions } from "./walls.js";
 import { classifyRoomEdges, assignWallTypesFromClassification, extendSkeletonForRoom, recomputeEnvelope, alignToEnvelope } from "./envelope.js";
 import { showAlert } from "./dialog.js";
-import { rectifyPolygon, extractValidAngles, alignToExistingRooms, FLOOR_PLAN_RULES, DEFAULT_WALL_TYPES, DEFAULT_FLOOR_HEIGHT_CM, snapToWallType, classifyWallTypes } from "./floor-plan-rules.js";
+import { rectifyPolygon, extractValidAngles, alignToExistingRooms, FLOOR_PLAN_RULES, DEFAULT_WALL_TYPES, DEFAULT_FLOOR_HEIGHT_CM, snapToWallType, classifyWallTypes, removePolygonMicroBumps, removeStackedWalls, enforcePolygonRules } from "./floor-plan-rules.js";
 import { closestPointOnSegment } from "./polygon-draw.js";
 
 /** Scale factor for rasterizing SVG backgrounds before detection.
@@ -82,8 +82,54 @@ export function createRoomDetectionController({ getSvg, getState, commit, render
   function getErrorEl()    { return document.getElementById("roomDetectionError"); }
 
   // ---- Panel show/hide ----
-  function showPanel() { getPanel()?.classList.remove("hidden"); }
-  function hidePanel() { getPanel()?.classList.add("hidden"); }
+  function positionPanelAboveEnvelope(panel) {
+    const svg = getSvg();
+    const floor = getFloor();
+    const envelope = floor?.layout?.envelope;
+    if (!svg || !envelope?.polygonCm?.length) return; // fall back to CSS default
+
+    // Find envelope top edge center in SVG (cm) coordinates
+    const ys = envelope.polygonCm.map(p => p.y);
+    const xs = envelope.polygonCm.map(p => p.x);
+    const minY = Math.min(...ys);
+    const centerX = (Math.min(...xs) + Math.max(...xs)) / 2;
+
+    // Convert SVG point to screen, then to container-relative
+    const pt = svg.createSVGPoint();
+    pt.x = centerX;
+    pt.y = minY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const screenPt = pt.matrixTransform(ctm);
+
+    const container = svg.parentElement;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+    const relX = screenPt.x - containerRect.left;
+    const relY = screenPt.y - containerRect.top;
+
+    // Position: centered horizontally at envelope center, bottom edge just above envelope top
+    const gap = 12; // px gap between panel and envelope
+    panel.style.left = `${relX}px`;
+    panel.style.top = `${relY - gap}px`;
+    panel.style.transform = "translate(-50%, -100%)";
+  }
+
+  function showPanel() {
+    const panel = getPanel();
+    if (!panel) return;
+    panel.classList.remove("hidden");
+    positionPanelAboveEnvelope(panel);
+  }
+  function hidePanel() {
+    const panel = getPanel();
+    if (!panel) return;
+    panel.classList.add("hidden");
+    // Reset to CSS defaults so calibration panel (same class) isn't affected
+    panel.style.left = "";
+    panel.style.top = "";
+    panel.style.transform = "";
+  }
 
   function showPreviewActions() { getPreviewActions()?.classList.remove("hidden"); }
   function hidePreviewActions() { getPreviewActions()?.classList.add("hidden"); }
@@ -340,7 +386,7 @@ export function createRoomDetectionController({ getSvg, getState, commit, render
     console.log(`[confirmDetection]   envelope: ${envelope ? 'present' : 'NONE'}, validAngles: ${JSON.stringify(envelope?.validAngles)}`);
     console.log(`[confirmDetection]   detectedWallThicknesses: ${JSON.stringify(_detectedWallThicknesses)}`);
 
-    const rectifiedGlobal = rectifyPolygon(_detectedPolygonCm, rules);
+    const rectifiedGlobal = enforcePolygonRules(_detectedPolygonCm, { rules });
     console.log(`[confirmDetection]   rectified: ${rectifiedGlobal.length} verts: ${JSON.stringify(rectifiedGlobal.map(p => `(${p.x.toFixed(1)},${p.y.toFixed(1)})`))}`);
 
 
@@ -745,26 +791,16 @@ export async function detectAndStoreEnvelope({ getState, commit, getCurrentFloor
     minEdgeLengthCm: FLOOR_PLAN_RULES.wallThickness.maxCm,
   });
 
-  // Rectify polygon: snap edges to discovered angles
+  // Enforce all polygon rules: rectify, remove bumps, remove stacked walls.
+  // Runs in a fixpoint loop to guarantee axis-alignment after all steps.
   const rectifyRules = { ...FLOOR_PLAN_RULES, standardAngles: validAngles };
-  const rectified = rectifyPolygon(finalPolygonCm, rectifyRules);
-
-  // Remove micro-bumps from external structures (retaining walls, stairs, etc.)
-  // Use 80% of median wall thickness — bumps (stairs, retaining walls) are
-  // thinner than walls. Using medianCm directly removes legitimate L-shape steps.
   const bumpThreshold = (finalResult.wallThicknesses?.medianCm ?? 25) * 0.8;
-  const bumped = removePolygonMicroBumps(rectified, bumpThreshold);
-
-  // Re-rectify: bump removal can leave residual notches where nearby V (or H)
-  // edges were separated by the bump.  A second pass merges those edges.
-  const reRectified = rectifyPolygon(bumped, rectifyRules);
-
-  // Remove stacked walls: parallel edges overlapping within wall-thickness distance
-  // (e.g. contour traced both inner and outer face of same wall).
-  // Use 1.5× measured median thickness — tighter than default maxCm (50cm) to
-  // avoid collapsing L-shape parallel edges that are legitimate building geometry.
   const stackedGap = (finalResult.wallThicknesses?.medianCm ?? 30) * 1.5;
-  const cleaned = removeStackedWalls(reRectified, stackedGap);
+  const cleaned = enforcePolygonRules(finalPolygonCm, {
+    rules: rectifyRules,
+    bumpThresholdCm: bumpThreshold,
+    stackedWallGapCm: stackedGap,
+  });
 
   // Re-measure wall thickness on the cleaned polygon so edge indices match
   const cleanedPx = cleaned.map(p => cmToImagePx(p.x, p.y, effectiveBg));

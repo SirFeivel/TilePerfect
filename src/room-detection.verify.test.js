@@ -4,8 +4,8 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync } from 'fs';
 import { decode, encode } from 'fast-png';
-import { detectRoomAtPixel, detectEnvelope, detectSpanningWalls, removePolygonMicroBumps, removeStackedWalls, detectWallThickness, autoDetectWallRange, buildGrayWallMask, filterSmallComponents, preprocessForRoomDetection, morphologicalClose, floodFillFromBorder, fillInteriorHoles, traceContour } from './room-detection.js';
-import { rectifyPolygon, extractValidAngles, FLOOR_PLAN_RULES, classifyWallTypes, snapToWallType } from './floor-plan-rules.js';
+import { detectRoomAtPixel, detectEnvelope, detectSpanningWalls, detectWallThickness, autoDetectWallRange, buildGrayWallMask, filterSmallComponents, preprocessForRoomDetection, morphologicalClose, floodFillFromBorder, fillInteriorHoles, traceContour } from './room-detection.js';
+import { rectifyPolygon, extractValidAngles, FLOOR_PLAN_RULES, classifyWallTypes, snapToWallType, removePolygonMicroBumps, removeStackedWalls, enforcePolygonRules } from './floor-plan-rules.js';
 
 // ── Load reference data ────────────────────────────────────────────────────
 const calibrated = JSON.parse(
@@ -1449,5 +1449,80 @@ describe('Phase 2: Envelope detection quality (real EG image)', () => {
       expect(edge.thicknessCm, `edge ${edge.edgeIndex}: ${edge.thicknessCm}cm`).toBeGreaterThanOrEqual(5);
       expect(edge.thicknessCm, `edge ${edge.edgeIndex}: ${edge.thicknessCm}cm`).toBeLessThanOrEqual(50);
     }
+  });
+});
+
+// ── Phase 3: enforcePolygonRules with OG floor plan data ──────────────────
+
+describe('Phase 3: enforcePolygonRules with OG polygon', () => {
+  // 36-edge polygon from OG floor plan detection (pass-2 after rectification).
+  // removeStackedWalls collapsed this to 5 vertices with a diagonal edge:
+  // (531, 1486.2) → (557.7, 1197.5) — dx=26.7, dy=288.7.
+  // enforcePolygonRules must guarantee no diagonals survive.
+  const ogPolygon = [
+    { x: 530.6, y: 1197.5 }, { x: 1525.0, y: 1197.5 },
+    { x: 1525.0, y: 2049.7 }, { x: 1158.6, y: 2049.7 },
+    { x: 1158.6, y: 2023.4 }, { x: 1272.8, y: 2023.4 },
+    { x: 1272.8, y: 1779.7 }, { x: 977.0, y: 1779.7 },
+    { x: 977.0, y: 1808.9 }, { x: 947.8, y: 1808.9 },
+    { x: 947.8, y: 1985.9 }, { x: 991.0, y: 1985.9 },
+    { x: 991.0, y: 2049.7 }, { x: 871.2, y: 2049.7 },
+    { x: 871.2, y: 2023.4 }, { x: 941.1, y: 2023.4 },
+    { x: 941.1, y: 1780.1 }, { x: 920.3, y: 1780.1 },
+    { x: 920.3, y: 1640.5 }, { x: 556.8, y: 1640.5 },
+    { x: 556.8, y: 1701.4 }, { x: 530.6, y: 1701.4 },
+    { x: 530.6, y: 1868.2 }, { x: 556.8, y: 1868.2 },
+    { x: 556.8, y: 2023.4 }, { x: 703.3, y: 2023.4 },
+    { x: 703.3, y: 2049.7 }, { x: 531.0, y: 2049.7 },
+    { x: 531.0, y: 1546.1 }, { x: 557.7, y: 1546.1 },
+    { x: 557.7, y: 1633.3 }, { x: 861.1, y: 1633.3 },
+    { x: 861.1, y: 1224.1 }, { x: 557.3, y: 1224.1 },
+    { x: 557.3, y: 1378.6 }, { x: 530.6, y: 1378.6 },
+  ];
+
+  // OG wall thickness median ≈ 29.6 cm
+  const medianCm = 29.6;
+  const bumpThreshold = medianCm * 0.8;
+  const stackedGap = medianCm * 1.5;
+
+  it('all output edges are axis-aligned after enforcePolygonRules', () => {
+    const result = enforcePolygonRules(ogPolygon, {
+      bumpThresholdCm: bumpThreshold,
+      stackedWallGapCm: stackedGap,
+    });
+
+    expect(result.length).toBeGreaterThanOrEqual(4);
+
+    for (let i = 0; i < result.length; i++) {
+      const a = result[i];
+      const b = result[(i + 1) % result.length];
+      const dx = Math.abs(b.x - a.x);
+      const dy = Math.abs(b.y - a.y);
+      const isH = dy < 1;
+      const isV = dx < 1;
+      expect(isH || isV, `edge ${i}: (${a.x.toFixed(1)},${a.y.toFixed(1)}) → (${b.x.toFixed(1)},${b.y.toFixed(1)}) is diagonal (dx=${dx.toFixed(1)}, dy=${dy.toFixed(1)})`).toBe(true);
+    }
+  });
+
+  it('converges within 3 iterations (no excessive looping)', () => {
+    const logs = [];
+    const origLog = console.log;
+    console.log = (...args) => { logs.push(args.join(' ')); };
+    try {
+      enforcePolygonRules(ogPolygon, {
+        bumpThresholdCm: bumpThreshold,
+        stackedWallGapCm: stackedGap,
+        maxIterations: 3,
+      });
+    } finally {
+      console.log = origLog;
+    }
+
+    const iterLogs = logs.filter(l => l.includes('[enforcePolygonRules]'));
+    // Should converge — last iteration log should say stable=true
+    const lastIter = iterLogs[iterLogs.length - 1];
+    expect(lastIter).toContain('stable=true');
+    // Should not need all 3 iterations
+    expect(iterLogs.length).toBeLessThanOrEqual(3);
   });
 });

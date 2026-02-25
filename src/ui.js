@@ -1424,7 +1424,12 @@ export function bindUI({
   document.getElementById("btnCopy")?.addEventListener("click", async () => {
     const state = store.getState();
     try {
-      await navigator.clipboard.writeText(JSON.stringify(state, null, 2));
+      const replacer = function(key, value) {
+        if (key === "dataUrl" && typeof value === "string" && value.startsWith("data:"))
+          return `<image: ${this.filename || "unknown"}>`;
+        return value;
+      };
+      await navigator.clipboard.writeText(JSON.stringify(state, replacer, 2));
       await showAlert({
         title: t("dialog.success") || "Success",
         message: t("dialog.copiedToClipboard") || "State copied to clipboard.",

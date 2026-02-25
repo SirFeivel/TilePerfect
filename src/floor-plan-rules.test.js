@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FLOOR_PLAN_RULES, extractValidAngles, rectifyPolygon, expandPolygonOutward, alignToExistingRooms, DEFAULT_WALL_TYPES, DEFAULT_FLOOR_HEIGHT_CM, snapToWallType, classifyWallTypes } from './floor-plan-rules.js';
+import { FLOOR_PLAN_RULES, extractValidAngles, rectifyPolygon, expandPolygonOutward, alignToExistingRooms, DEFAULT_WALL_TYPES, DEFAULT_FLOOR_HEIGHT_CM, snapToWallType, classifyWallTypes, enforcePolygonRules } from './floor-plan-rules.js';
 
 describe('FLOOR_PLAN_RULES config', () => {
   it('has expected top-level keys', () => {
@@ -565,5 +565,71 @@ describe('DEFAULT_WALL_TYPES', () => {
 describe('DEFAULT_FLOOR_HEIGHT_CM', () => {
   it('is 240', () => {
     expect(DEFAULT_FLOOR_HEIGHT_CM).toBe(240);
+  });
+});
+
+// ── enforcePolygonRules ───────────────────────────────────────────────
+
+describe('enforcePolygonRules', () => {
+  function allAxisAligned(pts) {
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      if (Math.abs(b.x - a.x) >= 1.0 && Math.abs(b.y - a.y) >= 1.0) return false;
+    }
+    return true;
+  }
+
+  it('passes a simple rectangle through unchanged', () => {
+    const rect = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 200 }, { x: 0, y: 200 }];
+    const result = enforcePolygonRules(rect);
+    expect(result).toHaveLength(4);
+    expect(allAxisAligned(result)).toBe(true);
+  });
+
+  it('returns input for null/short arrays', () => {
+    expect(enforcePolygonRules(null)).toBeNull();
+    expect(enforcePolygonRules([])).toEqual([]);
+    expect(enforcePolygonRules([{ x: 0, y: 0 }])).toEqual([{ x: 0, y: 0 }]);
+  });
+
+  it('fixes a polygon with a diagonal edge (simulates removeStackedWalls output)', () => {
+    // A polygon where one edge is diagonal: (0, 300) → (27, 0) should become vertical
+    const poly = [
+      { x: 0, y: 0 }, { x: 1000, y: 0 },
+      { x: 1000, y: 850 }, { x: 0, y: 300 }, // diagonal from (0,300) to prev vertex (1000,850) is fine
+                                                // but (0,300) → (27,0) at wrap-around is the diagonal
+    ];
+    // Replace last vertex to create a clear diagonal
+    const withDiag = [
+      { x: 0, y: 0 }, { x: 1000, y: 0 },
+      { x: 1000, y: 850 }, { x: 530, y: 850 },
+      { x: 530, y: 300 }, { x: 557, y: 0 }, // diagonal: dx=27, dy=300
+    ];
+    const result = enforcePolygonRules(withDiag);
+    expect(allAxisAligned(result)).toBe(true);
+  });
+
+  it('skips bump and stacked removal when options are null', () => {
+    const rect = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 200 }, { x: 0, y: 200 }];
+    // Should still produce valid output — just rectification
+    const result = enforcePolygonRules(rect, { bumpThresholdCm: null, stackedWallGapCm: null });
+    expect(result).toHaveLength(4);
+    expect(allAxisAligned(result)).toBe(true);
+  });
+
+  it('converges within maxIterations', () => {
+    // L-shaped polygon — no diagonals expected, should converge in 1 iteration
+    const lShape = [
+      { x: 0, y: 0 }, { x: 500, y: 0 }, { x: 500, y: 300 },
+      { x: 300, y: 300 }, { x: 300, y: 500 }, { x: 0, y: 500 },
+    ];
+    const result = enforcePolygonRules(lShape, {
+      bumpThresholdCm: 25,
+      stackedWallGapCm: 45,
+      maxIterations: 3,
+    });
+    expect(result.length).toBeGreaterThanOrEqual(3);
+    expect(allAxisAligned(result)).toBe(true);
   });
 });

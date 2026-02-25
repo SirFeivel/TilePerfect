@@ -473,6 +473,327 @@ export function rectifyPolygon(vertices, rules = FLOOR_PLAN_RULES) {
 }
 
 /**
+ * After rectifyPolygon, the polygon may contain small rectangular notches
+ * caused by external structures (retaining walls, stairs) that are
+ * morphologically connected to the building. These bumps are shorter than
+ * the median wall thickness and are not real architectural features.
+ *
+ * A bump is 3 consecutive edges forming a U-shape:
+ *   leg1 → short outer wall → leg2
+ * where the outer wall length (bump depth) is < maxBumpDepthCm and the
+ * two legs are parallel (both H or both V) and go in opposite directions.
+ * Collapsing removes the two interior vertices and re-merges collinear vertices.
+ *
+ * @param {Array<{x: number, y: number}>} vertices - Rectified polygon vertices
+ * @param {number} maxBumpDepthCm - Maximum bump depth to remove (default 30)
+ * @returns {Array<{x: number, y: number}>} Cleaned polygon
+ */
+export function removePolygonMicroBumps(vertices, maxBumpDepthCm = FLOOR_PLAN_RULES.wallThickness.maxCm) {
+  if (!vertices || vertices.length < 5) return vertices; // need at least 5 vertices for a bump
+
+  let pts = vertices.map(p => ({ x: p.x, y: p.y }));
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const n = pts.length;
+    if (n < 5) break;
+
+    for (let i = 0; i < n; i++) {
+      // Three consecutive edges: leg1 (prev→i), outer (i→next), leg2 (next→next2)
+      const iPrev = (i - 1 + n) % n;
+      const iNext = (i + 1) % n;
+      const iNext2 = (i + 2) % n;
+
+      const A = pts[iPrev]; // before bump
+      const B = pts[i];     // bump vertex 1 (start of outer wall)
+      const C = pts[iNext]; // bump vertex 2 (end of outer wall)
+      const D = pts[iNext2]; // after bump
+
+      // Edge B→C is the outer wall (should be short = bump depth)
+      const outerLen = Math.hypot(C.x - B.x, C.y - B.y);
+      if (outerLen >= maxBumpDepthCm || outerLen < 0.1) continue;
+
+      // Classify legs: A→B (leg1) and C→D (leg2)
+      const leg1IsH = Math.abs(A.y - B.y) < 0.5;
+      const leg1IsV = Math.abs(A.x - B.x) < 0.5;
+      const leg2IsH = Math.abs(C.y - D.y) < 0.5;
+      const leg2IsV = Math.abs(C.x - D.x) < 0.5;
+
+      // Both legs must be parallel (both H or both V)
+      if (leg1IsH && leg2IsH) {
+        // Legs are H, outer wall (B→C) should be V (perpendicular)
+        if (Math.abs(B.x - C.x) >= 0.5) continue;
+        // U-shape: legs go in opposite directions
+        const dir1 = B.x - A.x;
+        const dir2 = D.x - C.x;
+        if (dir1 * dir2 >= 0) continue;
+      } else if (leg1IsV && leg2IsV) {
+        // Legs are V, outer wall (B→C) should be H (perpendicular)
+        if (Math.abs(B.y - C.y) >= 0.5) continue;
+        // U-shape: legs go in opposite directions
+        const dir1 = B.y - A.y;
+        const dir2 = D.y - C.y;
+        if (dir1 * dir2 >= 0) continue;
+      } else {
+        continue;
+      }
+
+      // Collapse: remove B and C, snap D to align with A on the main wall axis.
+      if (leg1IsH) {
+        // Legs are H → main wall is V. Snap D's x to A's x (or vice versa).
+        // Pick the side with the longer adjacent main-wall edge.
+        // A's x comes from the main wall before the bump.
+        pts[iNext2] = { x: A.x, y: D.y };
+      } else {
+        // Legs are V → main wall is H. Snap D's y to A's y.
+        pts[iNext2] = { x: D.x, y: A.y };
+      }
+
+      // Remove B and C (higher index first)
+      if (iNext > i) {
+        pts.splice(iNext, 1);
+        pts.splice(i, 1);
+      } else {
+        pts.splice(i, 1);
+        pts.splice(iNext, 1);
+      }
+      changed = true;
+      break;
+    }
+  }
+
+  // Re-merge collinear vertices.
+  // Use a slightly larger tolerance than rectifyPolygon (1.0 cm vs 0.2 cm)
+  // because bump removal may combine vertices from slightly misaligned sides.
+  const COLLINEAR_TOL = 1.0;
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < pts.length && pts.length > 3; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length];
+      const b = pts[i];
+      const c = pts[(i + 1) % pts.length];
+
+      if (Math.abs(a.y - b.y) < COLLINEAR_TOL && Math.abs(b.y - c.y) < COLLINEAR_TOL) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+      if (Math.abs(a.x - b.x) < COLLINEAR_TOL && Math.abs(b.x - c.x) < COLLINEAR_TOL) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return pts;
+}
+
+/**
+ * Remove stacked (parallel overlapping) wall segments from an envelope polygon.
+ *
+ * A "stacked wall" is two parallel edges of the polygon that:
+ *   1. Share the same orientation (both H or both V)
+ *   2. Overlap when projected onto their shared axis
+ *   3. Are closer together on the perpendicular axis than maxGapCm
+ *
+ * This happens when the contour traces both sides of a wall or picks up an
+ * interior wall running parallel to the outer boundary. The fix collapses
+ * the stacked pair by removing the inner (shorter) edge and connecting its
+ * neighbors to the outer edge.
+ *
+ * Perpendicular crossings (e.g. a spanning wall crossing an outer wall) are
+ * NOT affected — only parallel overlaps are removed.
+ *
+ * @param {Array<{x:number,y:number}>} vertices - Polygon vertices (cm)
+ * @param {number} [maxGapCm] - Max perpendicular distance to consider stacked
+ * @returns {Array<{x:number,y:number}>} Cleaned polygon
+ */
+export function removeStackedWalls(vertices, maxGapCm = FLOOR_PLAN_RULES.wallThickness.maxCm) {
+  if (!vertices || vertices.length < 5) return vertices;
+
+  for (let i = 0; i < vertices.length; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % vertices.length];
+    const len = Math.hypot(b.x - a.x, b.y - a.y);
+    console.log(`  edge ${i}: (${a.x.toFixed(1)},${a.y.toFixed(1)}) → (${b.x.toFixed(1)},${b.y.toFixed(1)}) len=${len.toFixed(1)}cm`);
+  }
+
+  const ALIGN_TOL = 1.0; // cm tolerance for axis-alignment
+  let pts = vertices.map(p => ({ x: p.x, y: p.y }));
+
+  // Classify edges as H, V, or diagonal
+  function classifyEdge(a, b) {
+    if (Math.abs(a.y - b.y) < ALIGN_TOL) return 'H';
+    if (Math.abs(a.x - b.x) < ALIGN_TOL) return 'V';
+    return null;
+  }
+
+  // Projection overlap check: do [a1,a2] and [b1,b2] overlap on a 1D axis?
+  function rangesOverlap(a1, a2, b1, b2) {
+    const aMin = Math.min(a1, a2), aMax = Math.max(a1, a2);
+    const bMin = Math.min(b1, b2), bMax = Math.max(b1, b2);
+    return aMin < bMax && bMin < aMax;
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const n = pts.length;
+    if (n < 5) break;
+
+    for (let i = 0; i < n && !changed; i++) {
+      const a1 = pts[i], a2 = pts[(i + 1) % n];
+      const typeA = classifyEdge(a1, a2);
+      if (!typeA) continue;
+      const lenA = Math.hypot(a2.x - a1.x, a2.y - a1.y);
+
+      for (let j = i + 2; j < n && !changed; j++) {
+        if (j === (i - 1 + n) % n) continue; // skip adjacent
+        const b1 = pts[j], b2 = pts[(j + 1) % n];
+        const typeB = classifyEdge(b1, b2);
+        if (typeB !== typeA) continue;
+
+        const lenB = Math.hypot(b2.x - b1.x, b2.y - b1.y);
+
+        if (typeA === 'H') {
+          // Both horizontal — check perpendicular (Y) gap and X overlap
+          const gap = Math.abs(((a1.y + a2.y) / 2) - ((b1.y + b2.y) / 2));
+          if (gap >= maxGapCm) continue;
+          if (!rangesOverlap(a1.x, a2.x, b1.x, b2.x)) continue;
+        } else {
+          // Both vertical — check perpendicular (X) gap and Y overlap
+          const gap = Math.abs(((a1.x + a2.x) / 2) - ((b1.x + b2.x) / 2));
+          if (gap >= maxGapCm) continue;
+          if (!rangesOverlap(a1.y, a2.y, b1.y, b2.y)) continue;
+        }
+
+        // Stacked pair found — remove the shorter edge
+        const gap = typeA === 'H'
+          ? Math.abs(((a1.y + a2.y) / 2) - ((b1.y + b2.y) / 2))
+          : Math.abs(((a1.x + a2.x) / 2) - ((b1.x + b2.x) / 2));
+        const removeIdx = lenA <= lenB ? i : j;
+        const keepIdx = lenA <= lenB ? j : i;
+        const keep1 = pts[keepIdx], keep2 = pts[(keepIdx + 1) % n];
+
+        // Snap the removed edge's neighbors to the kept edge's axis
+        const prevIdx = (removeIdx - 1 + n) % n;
+        const nextIdx = (removeIdx + 2) % n;
+        if (typeA === 'H') {
+          // Kept edge is H — snap neighbors' Y to the kept edge's Y
+          const keepY = (keep1.y + keep2.y) / 2;
+          pts[prevIdx] = { x: pts[prevIdx].x, y: keepY };
+          pts[nextIdx] = { x: pts[nextIdx].x, y: keepY };
+        } else {
+          // Kept edge is V — snap neighbors' X to the kept edge's X
+          const keepX = (keep1.x + keep2.x) / 2;
+          pts[prevIdx] = { x: keepX, y: pts[prevIdx].y };
+          pts[nextIdx] = { x: keepX, y: pts[nextIdx].y };
+        }
+
+        // Remove the two vertices of the shorter edge
+        const r1 = removeIdx;
+        const r2 = (removeIdx + 1) % n;
+        if (r1 < r2) {
+          pts.splice(r2, 1);
+          pts.splice(r1, 1);
+        } else {
+          pts.splice(r1, 1);
+          pts.splice(r2, 1);
+        }
+
+        changed = true;
+      }
+    }
+  }
+
+  // Clean up: remove degenerate edges (zero-length) and collinear vertices
+  const COLLINEAR_TOL = 1.0;
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < pts.length && pts.length > 3; i++) {
+      const a = pts[(i - 1 + pts.length) % pts.length];
+      const b = pts[i];
+      const c = pts[(i + 1) % pts.length];
+      // Remove if collinear or degenerate
+      const cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+      if (Math.abs(cross) < COLLINEAR_TOL * Math.max(Math.hypot(b.x - a.x, b.y - a.y), Math.hypot(c.x - b.x, c.y - b.y))) {
+        pts.splice(i, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  return pts;
+}
+
+/**
+ * Unified polygon enforcement: runs rectification, bump removal, and stacked
+ * wall removal in a fixpoint loop until all edges are axis-aligned.
+ *
+ * Individual post-processing steps (removePolygonMicroBumps, removeStackedWalls)
+ * can violate axis-alignment established by rectifyPolygon. This function
+ * guarantees the output polygon has only H/V edges by re-checking after each
+ * pass and looping if violations are found.
+ *
+ * @param {Array<{x: number, y: number}>} vertices - Raw polygon vertices
+ * @param {Object} [options]
+ * @param {Object} [options.rules=FLOOR_PLAN_RULES] - Rectification rules
+ * @param {number|null} [options.bumpThresholdCm=null] - Max bump depth; null to skip
+ * @param {number|null} [options.stackedWallGapCm=null] - Max stacked wall gap; null to skip
+ * @param {number} [options.maxIterations=3] - Max fixpoint iterations
+ * @returns {Array<{x: number, y: number}>} Polygon with all edges axis-aligned
+ */
+export function enforcePolygonRules(vertices, {
+  rules = FLOOR_PLAN_RULES,
+  bumpThresholdCm = null,
+  stackedWallGapCm = null,
+  maxIterations = 3,
+} = {}) {
+  if (!vertices || vertices.length < 3) return vertices;
+
+  const AXIS_TOL = 1.0; // cm — edge is axis-aligned if dx or dy < this
+
+  function isAxisAligned(pts) {
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % pts.length];
+      const dx = Math.abs(b.x - a.x);
+      const dy = Math.abs(b.y - a.y);
+      if (dx >= AXIS_TOL && dy >= AXIS_TOL) return false;
+    }
+    return true;
+  }
+
+  let result = vertices;
+
+  for (let iter = 1; iter <= maxIterations; iter++) {
+    result = rectifyPolygon(result, rules);
+
+    if (bumpThresholdCm != null) {
+      result = removePolygonMicroBumps(result, bumpThresholdCm);
+      result = rectifyPolygon(result, rules); // clean up after bumps
+    }
+
+    if (stackedWallGapCm != null) {
+      result = removeStackedWalls(result, stackedWallGapCm);
+    }
+
+    const stable = isAxisAligned(result);
+    console.log(`[enforcePolygonRules] iteration ${iter}: ${result.length} vertices, stable=${stable}`);
+
+    if (stable) return result;
+  }
+
+  // Not converged — final safety net
+  console.warn(`[enforcePolygonRules] did not converge after ${maxIterations} iterations, applying final rectify`);
+  return rectifyPolygon(result, rules);
+}
+
+/**
  * Expand an axis-aligned polygon outward by a uniform distance.
  *
  * Detection traces the INNER room boundary. Expanding outward by half the
