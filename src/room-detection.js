@@ -1887,7 +1887,7 @@ export function detectEnvelope(imageData, options = {}) {
   // through the wall. This measures the full wall assembly from inside to outside.
   const wallThicknesses = detectWallThickness(imageData, polygonPixels, w, h, pixelsPerCm, { probeFromInnerFace: true });
 
-  return { polygonPixels, wallThicknesses, wallMask, buildingMask };
+  return { polygonPixels, wallThicknesses, wallMask, wallMaskFiltered, buildingMask };
 }
 
 /**
@@ -1934,6 +1934,7 @@ export function detectSpanningWalls(imageData, wallMask, buildingMask, w, h, opt
   const results = [];
 
   // ---- Horizontal spanning walls (scan rows) ----
+
   const hBands = profileAndDetectBands(
     /* scanCount */ h,
     /* crossCount */ w,

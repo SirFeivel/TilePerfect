@@ -681,13 +681,13 @@ export async function detectAndStoreEnvelope({ getState, commit, getCurrentFloor
     const { minCm, maxCm } = FLOOR_PLAN_RULES.wallThickness;
     const pass1Rejections = [];
     const rawWalls = detectSpanningWalls(
-      imageData, result.wallMask, result.buildingMask,
+      imageData, result.wallMaskFiltered || result.wallMask, result.buildingMask,
       imageData.width, imageData.height,
       { pixelsPerCm: effectivePpc, minThicknessCm: minCm, maxThicknessCm: maxCm, rejections: pass1Rejections }
     );
     if (pass1Rejections.length) {
       console.log(`[envelope] Pass 1 spanning wall rejections: ${pass1Rejections.length}`);
-      for (const r of pass1Rejections) console.log(`  [spanning] ${r.orientation} band ${r.band.start}-${r.band.end}: ${r.reason} ${r.details || ''}`);
+      for (const r of pass1Rejections) console.log(`  [spanning] ${r.orientation} band ${r.band.start}-${r.band.end}: ${r.reason}`, r.details || '');
     }
     pass1SpanningWalls = rawWalls.map(wall => ({
       orientation: wall.orientation,
@@ -776,13 +776,13 @@ export async function detectAndStoreEnvelope({ getState, commit, getCurrentFloor
     const { minCm, maxCm } = FLOOR_PLAN_RULES.wallThickness;
     const finalRejections = [];
     const rawWalls = detectSpanningWalls(
-      finalImageData, finalResult.wallMask, finalResult.buildingMask,
+      finalImageData, finalResult.wallMaskFiltered || finalResult.wallMask, finalResult.buildingMask,
       finalImageData.width, finalImageData.height,
       { pixelsPerCm: effectivePpc, minThicknessCm: minCm, maxThicknessCm: maxCm, rejections: finalRejections }
     );
     if (finalRejections.length) {
       console.log(`[envelope] Final spanning wall rejections: ${finalRejections.length}`);
-      for (const r of finalRejections) console.log(`  [spanning] ${r.orientation} band ${r.band.start}-${r.band.end}: ${r.reason} ${r.details || ''}`);
+      for (const r of finalRejections) console.log(`  [spanning] ${r.orientation} band ${r.band.start}-${r.band.end}: ${r.reason}`, r.details || '');
     }
     finalSpanningWalls = rawWalls.map(wall => ({
       orientation: wall.orientation,
