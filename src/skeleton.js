@@ -48,21 +48,23 @@ export function computeStructuralBoundaries(envelope) {
     const inNy = -sign * (-dx / len);
 
     if (Math.abs(dy) < 0.5) {
-      // H envelope edge
+      // H envelope edge — inner face (room side) + outer face (building exterior)
       const envY = (a.y + b.y) / 2;
       const innerY = envY + inNy * thickness;
-      hTargets.push({
-        coord: innerY, thickness, type: 'envelope',
-        envelopeEdgeIndex: i, rangeMin: Math.min(a.x, b.x), rangeMax: Math.max(a.x, b.x)
-      });
+      const range = { rangeMin: Math.min(a.x, b.x), rangeMax: Math.max(a.x, b.x) };
+      hTargets.push({ coord: innerY, thickness, type: 'envelope', envelopeEdgeIndex: i, ...range });
+      if (thickness > 0) {
+        hTargets.push({ coord: envY, thickness, type: 'envelope-outer', envelopeEdgeIndex: i, ...range });
+      }
     } else if (Math.abs(dx) < 0.5) {
-      // V envelope edge
+      // V envelope edge — inner face (room side) + outer face (building exterior)
       const envX = (a.x + b.x) / 2;
       const innerX = envX + inNx * thickness;
-      vTargets.push({
-        coord: innerX, thickness, type: 'envelope',
-        envelopeEdgeIndex: i, rangeMin: Math.min(a.y, b.y), rangeMax: Math.max(a.y, b.y)
-      });
+      const range = { rangeMin: Math.min(a.y, b.y), rangeMax: Math.max(a.y, b.y) };
+      vTargets.push({ coord: innerX, thickness, type: 'envelope', envelopeEdgeIndex: i, ...range });
+      if (thickness > 0) {
+        vTargets.push({ coord: envX, thickness, type: 'envelope-outer', envelopeEdgeIndex: i, ...range });
+      }
     }
   }
 

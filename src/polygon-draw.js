@@ -583,7 +583,6 @@ export function snapToRoomGeometry(
       normalizedPoint, boundaryTargets.hTargets, boundaryTargets.vTargets, CORNER_THRESHOLD
     );
     if (nearestCorner && nearestCorner.distance <= CORNER_THRESHOLD) {
-      console.log(`[poly-draw] corner snap: x=${nearestCorner.point.x.toFixed(1)} y=${nearestCorner.point.y.toFixed(1)} dist=${nearestCorner.distance.toFixed(2)}cm`);
       return { point: nearestCorner.point, type: "corner" };
     }
   }
@@ -624,7 +623,6 @@ export function snapToRoomGeometry(
         }
       }
 
-      console.log(`[poly-draw] boundary snap: ${Math.abs(bp.y - normalizedPoint.y) > Math.abs(bp.x - normalizedPoint.x) ? 'y' : 'x'}=${Math.abs(bp.y - normalizedPoint.y) > Math.abs(bp.x - normalizedPoint.x) ? bp.y.toFixed(1) : bp.x.toFixed(1)} (${nearestBoundary.type}, thick=${nearestBoundary.thickness.toFixed(1)}cm)`);
       return {
         point: bp,
         type: "boundary"
@@ -1036,7 +1034,6 @@ export function createPolygonDrawController({
 
     if (!bestQ) return null;
     const point = { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) };
-    console.log(`[poly-draw] dual-angle close snap: (${point.x.toFixed(1)},${point.y.toFixed(1)}) dist=${bestDist.toFixed(1)}cm`);
     return point;
   }
 

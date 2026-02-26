@@ -1405,13 +1405,17 @@ describe("computeStructuralBoundaries", () => {
     ],
   };
 
-  it("extracts 4 envelope inner faces + 2 spanning wall faces", () => {
+  it("extracts envelope inner+outer faces + spanning wall faces", () => {
     const { hTargets, vTargets } = computeStructuralBoundaries(envelope);
 
-    // 2 H envelope edges (top, bottom) + 2 spanning wall faces = 4 H targets
-    expect(hTargets.length).toBe(4);
-    // 2 V envelope edges (left, right)
-    expect(vTargets.length).toBe(2);
+    // 2 H envelope edges × 2 faces (inner+outer) + 2 spanning wall faces = 6 H targets
+    expect(hTargets.length).toBe(6);
+    // 2 V envelope edges × 2 faces (inner+outer) = 4 V targets
+    expect(vTargets.length).toBe(4);
+    // Envelope targets include both 'envelope' (inner) and 'envelope-outer' types
+    const hEnvTypes = hTargets.filter(t => t.type === 'envelope' || t.type === 'envelope-outer').map(t => t.type);
+    expect(hEnvTypes).toContain('envelope');
+    expect(hEnvTypes).toContain('envelope-outer');
   });
 
   it("inner faces are offset inward by wall thickness", () => {
