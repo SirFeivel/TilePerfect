@@ -783,6 +783,30 @@ export function createPolygonDrawController({
       snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey, assistedAngles);
     }
 
+    // When grid snap is active and the polygon is closable, apply dual-constraint
+    // closing snap (same logic as handleMouseMove) so clicks land on valid positions.
+    if (snapType === "grid" && assistedAngles && assistedAngles.length > 0
+        && lastPoint && points.length >= MIN_POINTS) {
+      const P0 = points[0];
+      let bestQ = null;
+      let bestDist = Infinity;
+      const DUAL_SNAP_CM = 80;
+      for (const inAngle of assistedAngles) {
+        const inRad = inAngle * Math.PI / 180;
+        for (const closeAngle of assistedAngles) {
+          const closeRad = ((closeAngle + 180) % 360) * Math.PI / 180;
+          const Q = findLineIntersection(lastPoint, inRad, P0, closeRad);
+          if (!Q || !Number.isFinite(Q.x) || !Number.isFinite(Q.y)) continue;
+          const dist = Math.hypot(Q.x - svgPoint.x, Q.y - svgPoint.y);
+          if (dist < DUAL_SNAP_CM && dist < bestDist) { bestDist = dist; bestQ = Q; }
+        }
+      }
+      if (bestQ) {
+        snappedPoint = { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) };
+        snapType = "close-angle";
+      }
+    }
+
     // For room view (exclusions): restrict clicks to within room bounds
     if (roomBoundsPolygon && !isPointInPolygon(snappedPoint, roomBoundsPolygon)) {
       // Point is outside room bounds - don't add it
@@ -860,10 +884,40 @@ export function createPolygonDrawController({
       }
     }
 
-    // If no geometry snap, use angle constraint or grid snap
+    // If no geometry snap, try dual-constraint closing snap first (assisted mode).
+    // When the polygon is closable, find the intersection of the incoming edge
+    // (lastPoint → Q at a valid angle) and the closing edge (Q → points[0] at a
+    // valid angle). The candidate nearest to the cursor wins.
+    if (!snappedPoint && assistedAngles && assistedAngles.length > 0
+        && lastPoint && points.length >= MIN_POINTS) {
+      const P0 = points[0];
+      let bestQ = null;
+      let bestDist = Infinity;
+      const DUAL_SNAP_CM = 80; // attract within 80 cm of a valid intersection
+
+      for (const inAngle of assistedAngles) {
+        const inRad = inAngle * Math.PI / 180;
+        for (const closeAngle of assistedAngles) {
+          // closing edge Q→P0 has direction closeAngle; P0→Q is the reverse
+          const closeRad = ((closeAngle + 180) % 360) * Math.PI / 180;
+          const Q = findLineIntersection(lastPoint, inRad, P0, closeRad);
+          if (!Q || !Number.isFinite(Q.x) || !Number.isFinite(Q.y)) continue;
+          const dist = Math.hypot(Q.x - svgPoint.x, Q.y - svgPoint.y);
+          if (dist < DUAL_SNAP_CM && dist < bestDist) {
+            bestDist = dist;
+            bestQ = Q;
+          }
+        }
+      }
+
+      if (bestQ) {
+        snappedPoint = { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) };
+        snapType = "close-angle";
+        console.log(`[poly-draw] dual-angle close snap: (${snappedPoint.x.toFixed(1)},${snappedPoint.y.toFixed(1)}) dist=${bestDist.toFixed(1)}cm`);
+      }
+    }
+
     if (!snappedPoint) {
-      // Shift snaps angle to previous point only - no dual-constraint
-      // To close the polygon, click near the first point
       snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey, assistedAngles);
     }
 
@@ -1050,7 +1104,7 @@ export function createPolygonDrawController({
     // can see where the first click will land (critical in assisted mode).
     if (points.length === 0) {
       if (mousePoint && (assistedMode || edgeSnapMode || roomVertices.length > 0)) {
-        const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge";
+        const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge" || currentSnapType === "close-angle";
         const isBoundary = currentSnapType === "boundary";
         const fillColor = isBoundary ? "#f97316" : isSnapped ? "#22c55e" : "#3b82f6";
         previewGroup.appendChild(svgEl("circle", {
@@ -1123,7 +1177,7 @@ export function createPolygonDrawController({
     if (mousePoint) {
       // Show red marker if inside a room, green if snapped to geometry, orange for boundary, blue otherwise
       const isInvalid = isMouseInsideRoom;
-      const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge";
+      const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge" || currentSnapType === "close-angle";
       const isBoundary = currentSnapType === "boundary";
 
       // Choose appearance based on state
