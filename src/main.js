@@ -3368,17 +3368,25 @@ function updateAllTranslations() {
     }
   });
 
-  // Draw Room button - start polygon drawing mode
+  // Draw Room button - toggle polygon drawing mode (stays active until dismissed)
   document.getElementById("floorDrawRoom")?.addEventListener("click", () => {
     const state = store.getState();
     if (state.view?.planningMode !== "floor") return;
 
     const drawRoomBtn = document.getElementById("floorDrawRoom");
+
+    // Toggle off if already drawing
+    if (polygonDrawController.isDrawing()) {
+      polygonDrawController.stopDrawing(true);
+      return;
+    }
+
     if (drawRoomBtn) drawRoomBtn.classList.add("active");
 
     polygonDrawController.startDrawing({
+      continuous: true,
       onComplete: (polygonPoints) => {
-        if (drawRoomBtn) drawRoomBtn.classList.remove("active");
+        // Mode stays active — button remains highlighted until explicitly cancelled
 
       // Create room from polygon
       const newRoom = polygonDrawController.createRoomFromPolygon(polygonPoints);

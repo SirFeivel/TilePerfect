@@ -652,6 +652,8 @@ export function createPolygonDrawController({
   let previewGroup = null;
   let onComplete = null;
   let onCancel = null;
+  let continuous = false; // Stay in draw mode after completing a room
+  let persistentOnCancel = null; // onCancel preserved across rooms in continuous mode
 
   // Edge snapping state
   let edgeSnapMode = false; // True when existing rooms exist and we need to snap first two points
@@ -676,9 +678,13 @@ export function createPolygonDrawController({
     if (typeof options === 'function') {
       onComplete = options;
       onCancel = null;
+      continuous = false;
+      persistentOnCancel = null;
     } else {
       onComplete = options?.onComplete || null;
       onCancel = options?.onCancel || null;
+      continuous = !!(options?.continuous);
+      persistentOnCancel = continuous ? (options?.onCancel || null) : null;
     }
 
     isDrawing = true;
@@ -797,14 +803,14 @@ export function createPolygonDrawController({
 
     if (cancelled) {
       points = [];
-      // Call onCancel callback if provided
-      if (onCancel) {
-        onCancel();
-      }
+      const cancelCb = persistentOnCancel || onCancel;
+      if (cancelCb) cancelCb();
     }
-    // Always clear callbacks
+    // Always clear callbacks and mode flags
     onComplete = null;
     onCancel = null;
+    continuous = false;
+    persistentOnCancel = null;
   }
 
   function handleClick(e) {
@@ -1321,16 +1327,49 @@ export function createPolygonDrawController({
     if (hintEl) hintEl.remove();
   }
 
+  function _refreshSnapCache() {
+    const floor = getCurrentFloor?.();
+    if (!floor) return;
+    cachedFloor = floor;
+    if (assistedMode || edgeSnapMode) {
+      roomEdges = getRoomEdges(floor);
+      roomVertices = getRoomVertices(floor);
+    }
+    if (assistedMode) {
+      const envelope = floor?.layout?.envelope;
+      boundaryTargets = computeStructuralBoundaries(envelope);
+      if (floor.walls?.length > 0) {
+        const roomOuter = computeRoomWallOuterFaces(floor);
+        boundaryTargets.hTargets.push(...roomOuter.hTargets);
+        boundaryTargets.vTargets.push(...roomOuter.vTargets);
+      }
+      console.log(`[poly-draw] snap cache refreshed: ${boundaryTargets.hTargets.length}H + ${boundaryTargets.vTargets.length}V targets, ${roomVertices.length} room vertices`);
+    }
+  }
+
   function completePolygon() {
     if (points.length < MIN_POINTS) return;
 
     const polygonPoints = [...points];
     const callback = onComplete;
 
-    stopDrawing();
-
-    if (callback) {
-      callback(polygonPoints);
+    if (continuous) {
+      // Reset draw state, fire callback (commits new room), then refresh snap cache
+      points = [];
+      snapTargetRoomId = null;
+      currentEdgeSnapPoint = null;
+      currentSnapType = null;
+      isMouseInsideRoom = false;
+      currentMousePoint = null;
+      if (callback) callback(polygonPoints);
+      _refreshSnapCache();
+      updateHint(assistedMode
+        ? "Trace room inner edges • Shift for 15° • Snapping to envelope + rooms"
+        : "Click to place first corner point (Shift for 15° angles)");
+      updatePreview(null);
+    } else {
+      stopDrawing();
+      if (callback) callback(polygonPoints);
     }
   }
 
