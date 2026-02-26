@@ -8,6 +8,7 @@ import {
   findNearestVertex,
   findNearestEdgePoint,
   findNearestBoundaryPoint,
+  findNearestCornerPoint,
   closestPointOnSegment,
   snapToRoomGeometry,
   snapToGrid,
@@ -788,6 +789,63 @@ describe("findNearestBoundaryPoint", () => {
   });
 });
 
+describe("findNearestCornerPoint", () => {
+  // H boundary at y=500 spanning x=[100,900], V boundary at x=200 spanning y=[0,800]
+  // Corner exists at (200, 500) — V.coord=200 is within H.rangeMin/Max and H.coord=500 is within V.rangeMin/Max
+  const hTargets = [
+    { coord: 500, thickness: 30, type: "envelope", rangeMin: 100, rangeMax: 900 },
+  ];
+  const vTargets = [
+    { coord: 200, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 800 },
+  ];
+
+  it("snaps to corner when cursor is near H/V intersection", () => {
+    const result = findNearestCornerPoint({ x: 202, y: 498 }, hTargets, vTargets, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.x).toBe(200);
+    expect(result.point.y).toBe(500);
+    expect(result.type).toBe("corner");
+    expect(result.distance).toBeCloseTo(Math.hypot(2, 2), 5);
+  });
+
+  it("returns null when cursor is too far from corner", () => {
+    const result = findNearestCornerPoint({ x: 210, y: 510 }, hTargets, vTargets, 5);
+    expect(result).toBeNull(); // dist = hypot(10,10) ≈ 14.1 > threshold 5
+  });
+
+  it("returns null when corner is outside H boundary range", () => {
+    // V boundary at x=50, outside H.rangeMin=100 — no corner
+    const vOutside = [{ coord: 50, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 800 }];
+    const result = findNearestCornerPoint({ x: 50, y: 500 }, hTargets, vOutside, 5);
+    expect(result).toBeNull();
+  });
+
+  it("returns null when corner is outside V boundary range", () => {
+    // H boundary at y=900, outside V.rangeMax=800 — no corner
+    const hOutside = [{ coord: 900, thickness: 30, type: "envelope", rangeMin: 100, rangeMax: 900 }];
+    const result = findNearestCornerPoint({ x: 200, y: 900 }, hOutside, vTargets, 5);
+    expect(result).toBeNull();
+  });
+
+  it("picks nearest corner when multiple corners exist", () => {
+    const h2 = [
+      { coord: 500, thickness: 30, type: "envelope", rangeMin: 0, rangeMax: 1000 },
+      { coord: 600, thickness: 30, type: "envelope", rangeMin: 0, rangeMax: 1000 },
+    ];
+    const v2 = [{ coord: 200, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 1000 }];
+    // Corners at (200,500) and (200,600). Cursor at (201, 598) is 2.24cm from (200,600) vs 102cm from (200,500).
+    const result = findNearestCornerPoint({ x: 201, y: 598 }, h2, v2, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.y).toBe(600);
+  });
+
+  it("returns null for null/invalid inputs", () => {
+    expect(findNearestCornerPoint(null, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestCornerPoint({ x: NaN, y: 5 }, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestCornerPoint({ x: 5, y: 5 }, null, vTargets, 5)).toBeNull();
+  });
+});
+
 describe("snapToRoomGeometry with boundary targets", () => {
   const vertices = [
     { roomId: "room1", vertex: { x: 0, y: 0 } },
@@ -816,12 +874,20 @@ describe("snapToRoomGeometry with boundary targets", () => {
     expect(result.type).toBe("edge");
   });
 
-  it("snaps to boundary when vertex/edge are out of range", () => {
+  it("snaps to corner when near H/V intersection", () => {
+    // (299, 201) is ~1.41cm from corner (300, 200) — within corner threshold (2*1.5=3cm)
     const result = snapToRoomGeometry({ x: 299, y: 201 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("corner");
+    expect(result.point.x).toBe(300);
+    expect(result.point.y).toBe(200);
+  });
+
+  it("snaps to boundary (not corner) when near single axis boundary only", () => {
+    // (300, 350) is exactly on V boundary x=300, but y=350 is outside H boundary range (0-500 includes it)
+    // The corner is at (300,200): dist = hypot(0,150) = 150 — far outside corner threshold
+    const result = snapToRoomGeometry({ x: 301, y: 350 }, vertices, edges, null, false, 2, 2, boundaryTargets);
     expect(result.type).toBe("boundary");
-    // V boundary at x=300 is 1cm away, H boundary at y=200 is 1cm away
-    // Both within threshold — picks closer
-    expect(result.point.x === 300 || result.point.y === 200).toBe(true);
+    expect(result.point.x).toBe(300);
   });
 
   it("falls back to grid when boundary is also out of range", () => {

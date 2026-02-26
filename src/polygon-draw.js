@@ -285,6 +285,40 @@ export function findNearestBoundaryPoint(point, hTargets, vTargets, threshold) {
 }
 
 /**
+ * Find the nearest H/V boundary intersection (corner) to the cursor.
+ * A corner exists at (v.coord, h.coord) when each boundary's range includes the other axis's coord.
+ * @param {{x: number, y: number}} point - Cursor position in floor coords
+ * @param {Array} hTargets - Horizontal boundary targets
+ * @param {Array} vTargets - Vertical boundary targets
+ * @param {number} threshold - Max distance to snap
+ * @returns {{point: {x: number, y: number}, type: string, distance: number} | null}
+ */
+export function findNearestCornerPoint(point, hTargets, vTargets, threshold) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  if (!Array.isArray(hTargets) || !Array.isArray(vTargets)) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+
+  for (const h of hTargets) {
+    for (const v of vTargets) {
+      // Corner exists only when each boundary's range includes the other's coord
+      if (v.coord < h.rangeMin || v.coord > h.rangeMax) continue;
+      if (h.coord < v.rangeMin || h.coord > v.rangeMax) continue;
+
+      const corner = { x: v.coord, y: h.coord };
+      const dist = Math.hypot(corner.x - point.x, corner.y - point.y);
+      if (dist <= threshold && dist < bestDist) {
+        bestDist = dist;
+        best = { point: corner, type: "corner", distance: dist };
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
  * Check if a point is inside a polygon using ray casting algorithm
  */
 function isPointInPolygon(point, polygon) {
@@ -493,6 +527,18 @@ export function snapToRoomGeometry(
         type: "edge",
         roomId: nearestEdge.roomId
       };
+    }
+  }
+
+  // Then try corner snapping (H∩V intersection — wider threshold, stronger pull)
+  if (boundaryTargets) {
+    const CORNER_THRESHOLD = edgeThreshold * 1.5;
+    const nearestCorner = findNearestCornerPoint(
+      normalizedPoint, boundaryTargets.hTargets, boundaryTargets.vTargets, CORNER_THRESHOLD
+    );
+    if (nearestCorner && nearestCorner.distance <= CORNER_THRESHOLD) {
+      console.log(`[poly-draw] corner snap: x=${nearestCorner.point.x.toFixed(1)} y=${nearestCorner.point.y.toFixed(1)} dist=${nearestCorner.distance.toFixed(2)}cm`);
+      return { point: nearestCorner.point, type: "corner" };
     }
   }
 
@@ -1106,7 +1152,8 @@ export function createPolygonDrawController({
       if (mousePoint && (assistedMode || edgeSnapMode || roomVertices.length > 0)) {
         const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge" || currentSnapType === "close-angle";
         const isBoundary = currentSnapType === "boundary";
-        const fillColor = isBoundary ? "#f97316" : isSnapped ? "#22c55e" : "#3b82f6";
+        const isCorner = currentSnapType === "corner";
+        const fillColor = isCorner ? "#eab308" : isBoundary ? "#f97316" : isSnapped ? "#22c55e" : "#3b82f6";
         previewGroup.appendChild(svgEl("circle", {
           cx: mousePoint.x, cy: mousePoint.y, r: 6,
           fill: fillColor, stroke: "#fff", "stroke-width": 2,
@@ -1179,6 +1226,7 @@ export function createPolygonDrawController({
       const isInvalid = isMouseInsideRoom;
       const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge" || currentSnapType === "close-angle";
       const isBoundary = currentSnapType === "boundary";
+      const isCorner = currentSnapType === "corner";
 
       // Choose appearance based on state
       let fillColor, strokeColor, radius, strokeWidth;
@@ -1186,6 +1234,12 @@ export function createPolygonDrawController({
         fillColor = "rgba(239, 68, 68, 0.7)";
         strokeColor = "#dc2626";
         radius = 6;
+        strokeWidth = 2;
+      } else if (isCorner) {
+        // Yellow marker for corner snaps (H∩V intersection)
+        fillColor = "#eab308";
+        strokeColor = "#fff";
+        radius = 8;
         strokeWidth = 2;
       } else if (isBoundary) {
         // Orange marker for boundary snaps
@@ -1225,6 +1279,17 @@ export function createPolygonDrawController({
           "stroke-width": 1
         });
         previewGroup.appendChild(diamond);
+      }
+
+      // Add crosshair indicator for corner snaps (both axes locked)
+      if (currentSnapType === "corner") {
+        const arm = 12;
+        previewGroup.appendChild(svgEl("path", {
+          d: `M ${mousePoint.x - arm} ${mousePoint.y} L ${mousePoint.x + arm} ${mousePoint.y} M ${mousePoint.x} ${mousePoint.y - arm} L ${mousePoint.x} ${mousePoint.y + arm}`,
+          stroke: "#eab308",
+          "stroke-width": 2,
+          fill: "none"
+        }));
       }
     }
   }
