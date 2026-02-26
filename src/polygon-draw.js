@@ -6,6 +6,7 @@ import { t } from "./i18n.js";
 import { createSurface } from "./surface.js";
 import { pointerToSvgXY, svgPointToClient } from "./svg-coords.js";
 import { computeStructuralBoundaries } from "./skeleton.js";
+import { getWallNormal } from "./walls.js";
 
 const MIN_POINTS = 3;
 const CLOSE_THRESHOLD_PX = 15; // Pixels to detect closing click on first point
@@ -316,6 +317,51 @@ export function findNearestCornerPoint(point, hTargets, vTargets, threshold) {
   }
 
   return best;
+}
+
+/**
+ * Compute outer face snap targets from existing room walls.
+ * For each axis-aligned wall, the outer face is at wallCoord + normal * thickness —
+ * i.e. the position where an adjacent room's inner edge should sit.
+ * Returns targets in the same { hTargets, vTargets } format as computeStructuralBoundaries.
+ * @param {Object} floor - Floor with rooms[] and walls[]
+ * @returns {{ hTargets: Array, vTargets: Array }}
+ */
+export function computeRoomWallOuterFaces(floor) {
+  const hTargets = [];
+  const vTargets = [];
+  if (!floor?.walls?.length || !floor?.rooms?.length) return { hTargets, vTargets };
+
+  for (const wall of floor.walls) {
+    const thick = wall.thicknessCm;
+    if (!thick || thick <= 0) continue;
+
+    const dx = wall.end.x - wall.start.x;
+    const dy = wall.end.y - wall.start.y;
+
+    const normal = getWallNormal(wall, floor);
+
+    if (Math.abs(dy) < 0.5 && Math.abs(dx) > 1) {
+      // H wall — outer face offset in Y
+      const wallY = (wall.start.y + wall.end.y) / 2;
+      const outerY = wallY + normal.y * thick;
+      const rangeMin = Math.min(wall.start.x, wall.end.x);
+      const rangeMax = Math.max(wall.start.x, wall.end.x);
+      hTargets.push({ coord: outerY, thickness: thick, type: 'room-outer', rangeMin, rangeMax });
+      console.log(`[poly-draw] room outer H: y=${outerY.toFixed(1)} (inner=${wallY.toFixed(1)}, thick=${thick}cm)`);
+    } else if (Math.abs(dx) < 0.5 && Math.abs(dy) > 1) {
+      // V wall — outer face offset in X
+      const wallX = (wall.start.x + wall.end.x) / 2;
+      const outerX = wallX + normal.x * thick;
+      const rangeMin = Math.min(wall.start.y, wall.end.y);
+      const rangeMax = Math.max(wall.start.y, wall.end.y);
+      vTargets.push({ coord: outerX, thickness: thick, type: 'room-outer', rangeMin, rangeMax });
+      console.log(`[poly-draw] room outer V: x=${outerX.toFixed(1)} (inner=${wallX.toFixed(1)}, thick=${thick}cm)`);
+    }
+    // Diagonal walls skipped — don't occur in rectified assisted-mode floor plans
+  }
+
+  return { hTargets, vTargets };
 }
 
 /**
@@ -658,6 +704,12 @@ export function createPolygonDrawController({
     assistedMode = !!(envelope && calibrated && floor?.layout?.assistedTracing);
     if (assistedMode) {
       boundaryTargets = computeStructuralBoundaries(envelope);
+      if (floor.walls?.length > 0) {
+        const roomOuter = computeRoomWallOuterFaces(floor);
+        boundaryTargets.hTargets.push(...roomOuter.hTargets);
+        boundaryTargets.vTargets.push(...roomOuter.vTargets);
+        console.log(`[poly-draw] room outer faces: ${roomOuter.hTargets.length} H + ${roomOuter.vTargets.length} V added`);
+      }
       assistedAngles = Array.isArray(envelope.validAngles) && envelope.validAngles.length > 0
         ? envelope.validAngles : null;
       console.log(`[poly-draw] assisted mode: ${boundaryTargets.hTargets.length} H + ${boundaryTargets.vTargets.length} V boundary targets, angles=${JSON.stringify(assistedAngles)}`);

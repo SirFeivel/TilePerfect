@@ -9,6 +9,7 @@ import {
   findNearestEdgePoint,
   findNearestBoundaryPoint,
   findNearestCornerPoint,
+  computeRoomWallOuterFaces,
   closestPointOnSegment,
   snapToRoomGeometry,
   snapToGrid,
@@ -843,6 +844,66 @@ describe("findNearestCornerPoint", () => {
     expect(findNearestCornerPoint(null, hTargets, vTargets, 5)).toBeNull();
     expect(findNearestCornerPoint({ x: NaN, y: 5 }, hTargets, vTargets, 5)).toBeNull();
     expect(findNearestCornerPoint({ x: 5, y: 5 }, null, vTargets, 5)).toBeNull();
+  });
+});
+
+describe("computeRoomWallOuterFaces", () => {
+  // Room: CW polygon (positive area in screen coords), y=0..100, x=0..200
+  // Bottom H edge goes RIGHT-to-LEFT: (200,100)→(0,100) — standard CW bottom edge direction
+  const room = {
+    id: "r1",
+    polygonVertices: [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 0, y: 100 }],
+    floorPosition: { x: 0, y: 0 }
+  };
+
+  it("computes outer face for H wall below room", () => {
+    // Bottom H wall: start=(200,100), end=(0,100), thickness=30
+    // area2>0 → sign=1, dx=-200,dy=0 → normal={x:0, y:1} → outerY = 100+1*30 = 130
+    const wall = { id: "w1", start: { x: 200, y: 100 }, end: { x: 0, y: 100 },
+      thicknessCm: 30, roomEdge: { roomId: "r1", edgeIndex: 2 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(1);
+    expect(result.hTargets[0].coord).toBeCloseTo(130);
+    expect(result.hTargets[0].type).toBe("room-outer");
+    expect(result.hTargets[0].rangeMin).toBe(0);
+    expect(result.hTargets[0].rangeMax).toBe(200);
+    expect(result.vTargets).toHaveLength(0);
+  });
+
+  it("computes outer face for V wall to the right of room", () => {
+    // Right V wall: start=(200,0), end=(200,100), thickness=24
+    // dx=0, dy=100 → normal={x: sign*100/100, y:0} = {x:1,y:0} → outerX = 200+1*24 = 224
+    const wall = { id: "w2", start: { x: 200, y: 0 }, end: { x: 200, y: 100 },
+      thicknessCm: 24, roomEdge: { roomId: "r1", edgeIndex: 1 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.vTargets).toHaveLength(1);
+    expect(result.vTargets[0].coord).toBeCloseTo(224);
+    expect(result.vTargets[0].type).toBe("room-outer");
+    expect(result.vTargets[0].rangeMin).toBe(0);
+    expect(result.vTargets[0].rangeMax).toBe(100);
+    expect(result.hTargets).toHaveLength(0);
+  });
+
+  it("skips walls with zero thickness", () => {
+    const wall = { id: "w3", start: { x: 200, y: 100 }, end: { x: 0, y: 100 },
+      thicknessCm: 0, roomEdge: { roomId: "r1", edgeIndex: 2 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(0);
+  });
+
+  it("returns empty targets for floor with no walls", () => {
+    const floor = { rooms: [room], walls: [] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(0);
+    expect(result.vTargets).toHaveLength(0);
+  });
+
+  it("returns empty targets for null/missing floor", () => {
+    expect(computeRoomWallOuterFaces(null).hTargets).toHaveLength(0);
+    expect(computeRoomWallOuterFaces({ rooms: [], walls: [] }).hTargets).toHaveLength(0);
   });
 });
 
