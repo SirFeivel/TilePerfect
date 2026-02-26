@@ -3,7 +3,8 @@ import { uuid, DEFAULT_SKIRTING_CONFIG, DEFAULT_TILE_PRESET } from "./core.js";
 import { findSharedEdgeMatches } from "./floor_geometry.js";
 import { DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM, WALL_ADJACENCY_TOLERANCE_CM, EPSILON } from "./constants.js";
 import { computeSkirtingSegments, roomPolygon } from "./geometry.js";
-import { FLOOR_PLAN_RULES } from "./floor-plan-rules.js";
+import { FLOOR_PLAN_RULES, snapToWallType } from "./floor-plan-rules.js";
+import { enforceSkeletonWallProperties, computeStructuralBoundaries } from "./skeleton.js";
 
 export const DEFAULT_WALL = {
   thicknessCm: DEFAULT_WALL_THICKNESS_CM,
@@ -73,6 +74,8 @@ function createDefaultSurface(side, roomId, edgeIndex, fromCm, toCm) {
 
 /**
  * Index existing walls by their "roomId:edgeIndex" key for fast lookup.
+ * Indexes both by wall.roomEdge (owner) and by each surface (guests),
+ * so shared walls are found for all rooms that reference them.
  * @returns {Map<string, Object>}
  */
 function indexWallsByEdge(walls) {
@@ -82,8 +85,235 @@ function indexWallsByEdge(walls) {
       const key = `${wall.roomEdge.roomId}:${wall.roomEdge.edgeIndex}`;
       wallByEdgeKey.set(key, wall);
     }
+    for (const s of (wall.surfaces || [])) {
+      const sKey = `${s.roomId}:${s.edgeIndex}`;
+      if (!wallByEdgeKey.has(sKey)) {
+        wallByEdgeKey.set(sKey, wall);
+      }
+    }
   }
   return wallByEdgeKey;
+}
+
+/**
+ * Validate a proposed wall that didn't match existing walls or envelope (step c).
+ * Checks geometric validity and conflicts.
+ * @returns {{ valid: boolean, action?: 'remove'|'adjust', reason?: string }}
+ */
+function validateProposedWall(startPt, endPt, existingWalls) {
+  const dx = endPt.x - startPt.x, dy = endPt.y - startPt.y;
+  const len = Math.hypot(dx, dy);
+
+  // Geometric: too short
+  if (len < 1) return { valid: false, action: 'remove', reason: 'too short' };
+
+  // Geometric: non-axis-aligned (neither H nor V within 0.5cm)
+  const isH = Math.abs(dy) < 0.5;
+  const isV = Math.abs(dx) < 0.5;
+  // Note: we don't reject diagonal edges — they're valid for non-rectangular rooms.
+  // But we log a warning since they're unusual.
+
+  // Conflict: closely parallels an existing wall on a different line
+  const conflictTol = FLOOR_PLAN_RULES.alignmentToleranceCm;
+  for (const w of existingWalls) {
+    const wdx = w.end.x - w.start.x, wdy = w.end.y - w.start.y;
+    const wLen = Math.hypot(wdx, wdy);
+    if (wLen < 1) continue;
+
+    if (isH && Math.abs(wdy) < 0.5) {
+      // Both horizontal: check if Y is very close but not identical (parallel duplicate)
+      const edgeY = (startPt.y + endPt.y) / 2;
+      const wallY = (w.start.y + w.end.y) / 2;
+      const dist = Math.abs(edgeY - wallY);
+      const edgeMinX = Math.min(startPt.x, endPt.x);
+      const edgeMaxX = Math.max(startPt.x, endPt.x);
+      const wallMinX = Math.min(w.start.x, w.end.x);
+      const wallMaxX = Math.max(w.start.x, w.end.x);
+      const overlap = Math.min(edgeMaxX, wallMaxX) - Math.max(edgeMinX, wallMinX);
+      if (dist > 0.5 && dist <= conflictTol && overlap > 1) {
+        return { valid: false, action: 'remove', reason: `parallel conflict with wall ${w.id} (dist=${dist.toFixed(1)})` };
+      }
+    } else if (isV && Math.abs(wdx) < 0.5) {
+      const edgeX = (startPt.x + endPt.x) / 2;
+      const wallX = (w.start.x + w.end.x) / 2;
+      const dist = Math.abs(edgeX - wallX);
+      const edgeMinY = Math.min(startPt.y, endPt.y);
+      const edgeMaxY = Math.max(startPt.y, endPt.y);
+      const wallMinY = Math.min(w.start.y, w.end.y);
+      const wallMaxY = Math.max(w.start.y, w.end.y);
+      const overlap = Math.min(edgeMaxY, wallMaxY) - Math.max(edgeMinY, wallMinY);
+      if (dist > 0.5 && dist <= conflictTol && overlap > 1) {
+        return { valid: false, action: 'remove', reason: `parallel conflict with wall ${w.id} (dist=${dist.toFixed(1)})` };
+      }
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Check if a proposed edge aligns with an envelope/spanning wall boundary (step b).
+ * Uses structural boundaries from computeStructuralBoundaries().
+ * @returns {Object|null} Matching boundary target (with thickness, type) or null
+ */
+function findAlignedBoundary(hTargets, vTargets, startPt, endPt) {
+  const dx = endPt.x - startPt.x, dy = endPt.y - startPt.y;
+  const len = Math.hypot(dx, dy);
+
+  // Angle-based H/V: < ~6° deviation from axis (handles polygon vertex imprecision)
+  const isH = len > 0.5 && Math.abs(dy / len) < 0.1;
+  const isV = len > 0.5 && Math.abs(dx / len) < 0.1;
+  if (!isH && !isV) return null;
+
+  const baseTolerance = FLOOR_PLAN_RULES.alignmentToleranceCm;
+
+  // Use the max thickness across ALL targets as a floor for tolerance.
+  // This handles cases where envelope re-detection changes wall measurements —
+  // a room drawn at the inner face of a 30cm wall should still match even if
+  // a later detection measures that wall as only 8.5cm.
+  let maxThickness = 0;
+  for (const t of hTargets) if (t.thickness > maxThickness) maxThickness = t.thickness;
+  for (const t of vTargets) if (t.thickness > maxThickness) maxThickness = t.thickness;
+
+  if (isH) {
+    const edgeY = (startPt.y + endPt.y) / 2;
+    const edgeMinX = Math.min(startPt.x, endPt.x);
+    const edgeMaxX = Math.max(startPt.x, endPt.x);
+    let best = null, bestDist = Infinity;
+    for (const t of hTargets) {
+      const tol = Math.max(baseTolerance, t.thickness, maxThickness);
+      const dist = Math.abs(t.coord - edgeY);
+      const overlap = Math.min(edgeMaxX, t.rangeMax) - Math.max(edgeMinX, t.rangeMin);
+      console.log(`[walls] findAlignedBoundary H: edgeY=${edgeY.toFixed(1)} x=[${edgeMinX.toFixed(1)},${edgeMaxX.toFixed(1)}] vs target y=${t.coord.toFixed(1)} range=[${t.rangeMin.toFixed(1)},${t.rangeMax.toFixed(1)}] dist=${dist.toFixed(1)} tol=${tol.toFixed(1)} overlap=${overlap.toFixed(1)} → ${dist <= tol && overlap > 1 ? 'MATCH' : 'no'}`);
+      if (dist <= tol && dist < bestDist && overlap > 1) {
+        best = t; bestDist = dist;
+      }
+    }
+    return best;
+  } else {
+    const edgeX = (startPt.x + endPt.x) / 2;
+    const edgeMinY = Math.min(startPt.y, endPt.y);
+    const edgeMaxY = Math.max(startPt.y, endPt.y);
+    let best = null, bestDist = Infinity;
+    for (const t of vTargets) {
+      const tol = Math.max(baseTolerance, t.thickness, maxThickness);
+      const dist = Math.abs(t.coord - edgeX);
+      const overlap = Math.min(edgeMaxY, t.rangeMax) - Math.max(edgeMinY, t.rangeMin);
+      console.log(`[walls] findAlignedBoundary V: edgeX=${edgeX.toFixed(1)} y=[${edgeMinY.toFixed(1)},${edgeMaxY.toFixed(1)}] vs target x=${t.coord.toFixed(1)} range=[${t.rangeMin.toFixed(1)},${t.rangeMax.toFixed(1)}] dist=${dist.toFixed(1)} tol=${tol.toFixed(1)} overlap=${overlap.toFixed(1)} → ${dist <= tol && overlap > 1 ? 'MATCH' : 'no'}`);
+      if (dist <= tol && dist < bestDist && overlap > 1) {
+        best = t; bestDist = dist;
+      }
+    }
+    return best;
+  }
+}
+
+/**
+ * Search existing walls for one that aligns with a proposed edge (step a).
+ * "Aligns" means: same orientation, same perpendicular coordinate ± tolerance,
+ * overlapping or adjacent along the axis.
+ * @returns {Object|null} Matching wall or null
+ */
+function findAlignedWall(walls, startPt, endPt, tolerance, excludeRoomId) {
+  const dx = endPt.x - startPt.x, dy = endPt.y - startPt.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1) return null;
+
+  // Angle-based H/V: < ~6° deviation from axis (handles polygon vertex imprecision)
+  const isH = Math.abs(dy / len) < 0.1;
+  const isV = Math.abs(dx / len) < 0.1;
+  if (!isH && !isV) return null; // diagonal — no matching
+
+  // Gap tolerance along the axis: rooms separated by a wall have a gap equal to
+  // wall thickness. Use the max thickness of any existing wall (+1cm margin) so
+  // that edges on the same structural line but separated by a spanning wall or
+  // thick envelope wall are still matched to the same wall.
+  let maxThick = DEFAULT_WALL_THICKNESS_CM;
+  for (const w of walls) {
+    const t = w.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM;
+    if (t > maxThick) maxThick = t;
+  }
+  const gapTolerance = maxThick + 1;
+
+  let bestWall = null, bestDist = Infinity;
+
+  for (const w of walls) {
+    // Skip walls owned by the same room — each room's edges get separate walls
+    if (excludeRoomId && w.roomEdge && w.roomEdge.roomId === excludeRoomId) continue;
+    const wdx = w.end.x - w.start.x, wdy = w.end.y - w.start.y;
+    const wLen = Math.hypot(wdx, wdy);
+    if (wLen < 1) continue;
+
+    const wIsH = Math.abs(wdy / wLen) < 0.1;
+    const wIsV = Math.abs(wdx / wLen) < 0.1;
+
+    if (isH && wIsH) {
+      // Both horizontal: compare Y coords and check range overlap/adjacency
+      const edgeY = (startPt.y + endPt.y) / 2;
+      const wallY = (w.start.y + w.end.y) / 2;
+      const dist = Math.abs(edgeY - wallY);
+      const edgeMinX = Math.min(startPt.x, endPt.x);
+      const edgeMaxX = Math.max(startPt.x, endPt.x);
+      const wallMinX = Math.min(w.start.x, w.end.x);
+      const wallMaxX = Math.max(w.start.x, w.end.x);
+      const gap = Math.max(edgeMinX, wallMinX) - Math.min(edgeMaxX, wallMaxX);
+      if (dist <= tolerance && dist < bestDist && gap <= gapTolerance) {
+        bestWall = w; bestDist = dist;
+      }
+    } else if (isV && wIsV) {
+      // Both vertical: compare X coords and check range overlap/adjacency
+      const edgeX = (startPt.x + endPt.x) / 2;
+      const wallX = (w.start.x + w.end.x) / 2;
+      const dist = Math.abs(edgeX - wallX);
+      const edgeMinY = Math.min(startPt.y, endPt.y);
+      const edgeMaxY = Math.max(startPt.y, endPt.y);
+      const wallMinY = Math.min(w.start.y, w.end.y);
+      const wallMaxY = Math.max(w.start.y, w.end.y);
+      const gap = Math.max(edgeMinY, wallMinY) - Math.min(edgeMaxY, wallMaxY);
+      if (dist <= tolerance && dist < bestDist && gap <= gapTolerance) {
+        bestWall = w; bestDist = dist;
+      }
+    }
+  }
+
+  return bestWall;
+}
+
+/**
+ * Extend a wall's geometry to cover a new edge (union, never shrinks).
+ * H walls: extend X range, keep Y. V walls: extend Y range, keep X.
+ */
+function extendWallGeometry(wall, startPt, endPt) {
+  const wdx = wall.end.x - wall.start.x;
+  const wdy = wall.end.y - wall.start.y;
+  const wLen = Math.hypot(wdx, wdy);
+
+  // Use angle-based classification: a wall is H/V if its deviation from
+  // the axis is < ~6° (sin < 0.1). This handles polygon-drawn walls with
+  // small vertex deviations (e.g. 1cm over 400cm).
+  const isH = wLen > 0.5 && Math.abs(wdy / wLen) < 0.1;
+  const isV = wLen > 0.5 && Math.abs(wdx / wLen) < 0.1;
+
+  if (isH) {
+    // Horizontal wall: extend X range
+    const minX = Math.min(wall.start.x, wall.end.x, startPt.x, endPt.x);
+    const maxX = Math.max(wall.start.x, wall.end.x, startPt.x, endPt.x);
+    if (wall.start.x <= wall.end.x) {
+      wall.start.x = minX; wall.end.x = maxX;
+    } else {
+      wall.start.x = maxX; wall.end.x = minX;
+    }
+  } else if (isV) {
+    // Vertical wall: extend Y range
+    const minY = Math.min(wall.start.y, wall.end.y, startPt.y, endPt.y);
+    const maxY = Math.max(wall.start.y, wall.end.y, startPt.y, endPt.y);
+    if (wall.start.y <= wall.end.y) {
+      wall.start.y = minY; wall.end.y = maxY;
+    } else {
+      wall.start.y = maxY; wall.end.y = minY;
+    }
+  }
+  // Diagonal walls: no extension (shouldn't happen for axis-aligned rooms)
 }
 
 /**
@@ -91,8 +321,12 @@ function indexWallsByEdge(walls) {
  * Updates wall geometry for existing walls, creates surfaces for new walls.
  * @returns {Set<string>} IDs of all walls that correspond to valid room edges
  */
-function ensureWallsForEdges(rooms, floor, wallByEdgeKey) {
+function ensureWallsForEdges(rooms, floor, wallByEdgeKey, envelope) {
   const touchedWallIds = new Set();
+  const tolerance = FLOOR_PLAN_RULES.alignmentToleranceCm;
+
+  // Compute structural boundaries once for step (b)
+  const { hTargets, vTargets } = computeStructuralBoundaries(envelope);
 
   for (const room of rooms) {
     const pos = room.floorPosition || { x: 0, y: 0 };
@@ -112,43 +346,118 @@ function ensureWallsForEdges(rooms, floor, wallByEdgeKey) {
       let wall = wallByEdgeKey.get(key);
 
       if (wall) {
-        // Delete doorways when wall geometry changes (room drag/resize)
-        // to avoid complex offset compensation and ghost doorways
-        const oldLen = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
-        const geometryChanged = oldLen > 1 && (
-          Math.abs(wall.start.x - startPt.x) > 0.5 ||
-          Math.abs(wall.start.y - startPt.y) > 0.5 ||
-          Math.abs(wall.end.x - endPt.x) > 0.5 ||
-          Math.abs(wall.end.y - endPt.y) > 0.5
-        );
-        if (geometryChanged && wall.doorways.length > 0) {
-          wall.doorways = [];
+        const isOwner = wall.roomEdge &&
+          wall.roomEdge.roomId === room.id && wall.roomEdge.edgeIndex === i;
+
+        if (isOwner) {
+          // Owner room: SET geometry to this room's edge (source of truth)
+          const oldLen = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+          const geometryChanged = oldLen > 1 && (
+            Math.abs(wall.start.x - startPt.x) > 0.5 ||
+            Math.abs(wall.start.y - startPt.y) > 0.5 ||
+            Math.abs(wall.end.x - endPt.x) > 0.5 ||
+            Math.abs(wall.end.y - endPt.y) > 0.5
+          );
+          if (geometryChanged && wall.doorways.length > 0) {
+            wall.doorways = [];
+          }
+          wall.start = startPt;
+          wall.end = endPt;
+
+          // Re-extend to cover guest rooms that were already processed
+          // (their edges may extend beyond the owner's edge range)
+          for (const s of wall.surfaces) {
+            if (s.roomId === room.id) continue;
+            const guestRoom = rooms.find(r => r.id === s.roomId);
+            if (!guestRoom) continue;
+            const gPos = guestRoom.floorPosition || { x: 0, y: 0 };
+            const gVerts = guestRoom.polygonVertices;
+            if (!gVerts || s.edgeIndex >= gVerts.length) continue;
+            const gA = gVerts[s.edgeIndex];
+            const gB = gVerts[(s.edgeIndex + 1) % gVerts.length];
+            const gStart = { x: gPos.x + gA.x, y: gPos.y + gA.y };
+            const gEnd = { x: gPos.x + gB.x, y: gPos.y + gB.y };
+            extendWallGeometry(wall, gStart, gEnd);
+          }
         }
-        wall.start = startPt;
-        wall.end = endPt;
+        else {
+          // Guest room (found via surface key): EXTEND geometry to cover this edge
+          extendWallGeometry(wall, startPt, endPt);
+        }
         touchedWallIds.add(wall.id);
       } else {
-        wall = createDefaultWall(startPt, endPt, { roomId: room.id, edgeIndex: i });
-        const surface = createDefaultSurface("left", room.id, i, 0, edgeLen);
-        wall.surfaces.push(surface);
-        floor.walls.push(wall);
-        wallByEdgeKey.set(key, wall);
-        touchedWallIds.add(wall.id);
+        // Decision tree: (a) → (b) → (c) → (d)
+        // Skip walls owned by this room — same room's edges should stay separate
+        const aligned = findAlignedWall(floor.walls, startPt, endPt, tolerance, room.id);
+
+        if (aligned) {
+          // (a) Extend existing wall
+          wall = aligned;
+          extendWallGeometry(wall, startPt, endPt);
+          wallByEdgeKey.set(key, wall);
+          touchedWallIds.add(wall.id);
+          console.log(`[walls] edge ${room.id}:e${i} → (a) extended wall ${wall.id} (${JSON.stringify(wall.start)}→${JSON.stringify(wall.end)})`);
+        } else {
+          const boundary = findAlignedBoundary(hTargets, vTargets, startPt, endPt);
+
+          if (boundary) {
+            // (b) Create wall with envelope/spanning wall properties
+            const { snappedCm } = snapToWallType(boundary.thickness, floor.layout?.wallDefaults?.types);
+            wall = createDefaultWall(startPt, endPt, { roomId: room.id, edgeIndex: i }, { thicknessCm: snappedCm });
+            const surface = createDefaultSurface("left", room.id, i, 0, edgeLen);
+            wall.surfaces.push(surface);
+            floor.walls.push(wall);
+            wallByEdgeKey.set(key, wall);
+            touchedWallIds.add(wall.id);
+            console.log(`[walls] edge ${room.id}:e${i} → (b) new wall from ${boundary.type} (thick=${snappedCm}cm)`);
+          } else {
+            const validation = validateProposedWall(startPt, endPt, floor.walls);
+
+            if (!validation.valid) {
+              // (c) Rule violation — skip this edge
+              console.log(`[walls] edge ${room.id}:e${i} → (c) ${validation.action}: ${validation.reason}`);
+              continue;
+            }
+
+            // (d) Create wall with defaults
+            wall = createDefaultWall(startPt, endPt, { roomId: room.id, edgeIndex: i });
+            const surface = createDefaultSurface("left", room.id, i, 0, edgeLen);
+            wall.surfaces.push(surface);
+            floor.walls.push(wall);
+            wallByEdgeKey.set(key, wall);
+            touchedWallIds.add(wall.id);
+            console.log(`[walls] edge ${room.id}:e${i} → (d) new wall with defaults`);
+          }
+        }
+      }
+
+      // Compute surface fromCm/toCm by projecting room edge onto wall axis
+      const wallLen = Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+      let surfaceFrom, surfaceTo;
+      if (wallLen > 0.5) {
+        const dirX = (wall.end.x - wall.start.x) / wallLen;
+        const dirY = (wall.end.y - wall.start.y) / wallLen;
+        surfaceFrom = (startPt.x - wall.start.x) * dirX + (startPt.y - wall.start.y) * dirY;
+        surfaceTo = (endPt.x - wall.start.x) * dirX + (endPt.y - wall.start.y) * dirY;
+        // Ensure from < to for consistent surface ranges
+        if (surfaceFrom > surfaceTo) {
+          [surfaceFrom, surfaceTo] = [surfaceTo, surfaceFrom];
+        }
+      } else {
+        surfaceFrom = 0;
+        surfaceTo = edgeLen;
       }
 
       const hasOwnSurface = wall.surfaces.some(
         s => s.roomId === room.id && s.edgeIndex === i
       );
       if (!hasOwnSurface) {
-        wall.surfaces.push(createDefaultSurface("left", room.id, i, 0, edgeLen));
+        wall.surfaces.push(createDefaultSurface("left", room.id, i, surfaceFrom, surfaceTo));
       } else {
-        // Update surface range to match current edge length.
-        // Reset fromCm=0 because wall.start was just set to this room's edge start;
-        // mergeSharedEdgeWalls will shift it if the wall gets extended for shared edges.
         for (const s of wall.surfaces) {
           if (s.roomId === room.id && s.edgeIndex === i) {
-            s.fromCm = 0;
-            s.toCm = edgeLen;
+            s.fromCm = surfaceFrom;
+            s.toCm = surfaceTo;
           }
         }
       }
@@ -163,6 +472,21 @@ function ensureWallsForEdges(rooms, floor, wallByEdgeKey) {
  * for adjacent rooms onto the surviving wall.
  */
 function mergeSharedEdgeWalls(rooms, floor, wallByEdgeKey, touchedWallIds) {
+  // Merge tolerance: edges on opposite faces of the same wall can be up to
+  // maxThick apart. Use max thickness across all walls AND wallDefaults types + margin.
+  let maxThick = DEFAULT_WALL_THICKNESS_CM;
+  for (const w of floor.walls) {
+    const t = w.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM;
+    if (t > maxThick) maxThick = t;
+  }
+  const wallTypes = floor.layout?.wallDefaults?.types;
+  if (wallTypes) {
+    for (const t of wallTypes) {
+      if (t.thicknessCm > maxThick) maxThick = t.thicknessCm;
+    }
+  }
+  const mergeTolerance = maxThick + 1;
+
   for (const room of rooms) {
     const verts = room.polygonVertices;
     if (!verts || verts.length < 3) continue;
@@ -174,10 +498,14 @@ function mergeSharedEdgeWalls(rooms, floor, wallByEdgeKey, touchedWallIds) {
       const wall = wallByEdgeKey.get(key);
       if (!wall) continue;
 
-      // + 1 cm: adjacency detection tolerance beyond wall thickness
-      const wallTolerance = (wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM) + 1;
-      const matches = findSharedEdgeMatches(room, i, otherRooms, wallTolerance);
+      const matches = findSharedEdgeMatches(room, i, otherRooms, mergeTolerance);
       for (const match of matches) {
+        // If the other room's edge already points to THIS wall (wall reuse from
+        // ensureWallsForEdges), the wall is already shared — skip merge.
+        const matchKey = `${match.room.id}:${match.edgeIndex}`;
+        const matchWall = wallByEdgeKey.get(matchKey);
+        if (matchWall && matchWall.id === wall.id) continue;
+
         const existing = wall.surfaces.find(
           s => s.roomId === match.room.id && s.edgeIndex === match.edgeIndex
         );
@@ -268,8 +596,24 @@ function mergeSharedEdgeWalls(rooms, floor, wallByEdgeKey, touchedWallIds) {
             wall.thicknessCm = Math.max(prevThick, otherThick);
             console.log(`[walls] mergeSharedEdgeWalls: both classified, taking max(${prevThick}, ${otherThick})cm for wall ${wall.id}`);
           } else {
-            wall.thicknessCm = prevThick;
-            console.log(`[walls] mergeSharedEdgeWalls: both default ${prevThick}cm for wall ${wall.id}`);
+            // Both default thickness — try gap-based inference from perpDist
+            const gap = match.perpDist;
+            if (gap > 0.5) {
+              const wallTypes = floor.layout?.wallDefaults?.types;
+              const { snappedCm } = snapToWallType(gap, wallTypes);
+              const delta = Math.abs(gap - snappedCm);
+              const GAP_SNAP_TOLERANCE_CM = 3;
+              if (delta <= GAP_SNAP_TOLERANCE_CM) {
+                wall.thicknessCm = snappedCm;
+                console.log(`[walls] mergeSharedEdgeWalls: gap-inferred thickness: gap=${gap.toFixed(1)} → ${snappedCm}cm (delta=${delta.toFixed(1)}) for wall ${wall.id}`);
+              } else {
+                wall.thicknessCm = Math.round(gap);
+                console.log(`[walls] mergeSharedEdgeWalls: gap-inferred thickness: gap=${gap.toFixed(1)} → ${Math.round(gap)}cm (delta=${delta.toFixed(1)}, exceeded tolerance) for wall ${wall.id}`);
+              }
+            } else {
+              wall.thicknessCm = prevThick;
+              console.log(`[walls] mergeSharedEdgeWalls: both default ${prevThick}cm for wall ${wall.id}`);
+            }
           }
 
           const idx = floor.walls.indexOf(otherWall);
@@ -309,8 +653,11 @@ function pruneOrphanSurfaces(floor, rooms, roomIds) {
       };
       const vx = eMid.x - wall.start.x, vy = eMid.y - wall.start.y;
       const perpDist = Math.abs(vx * wny - vy * wnx);
-      // + 2 cm: slightly wider tolerance than wall thickness for adjacency detection
-      const maxDist = (wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM) + 2;
+      // After gap-based merge, the guest surface sits at the true gap distance which
+      // may exceed the snapped wall thickness (e.g. 14cm gap snapped to 11.5cm).
+      // Use GAP_SNAP_TOLERANCE_CM (3) + 2cm margin beyond wall thickness to avoid
+      // pruning legitimate surfaces that were just merged.
+      const maxDist = (wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM) + 5;
       return perpDist <= maxDist;
     });
   }
@@ -343,34 +690,35 @@ export function enforceAdjacentPositions(floor) {
     const normal = getWallNormal(wall, floor);
     const thick = wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM;
 
-    const adjSurf = wall.surfaces.find(s => s.roomId !== ownerRoomId);
-    if (!adjSurf) continue;
+    // Process ALL non-owner surfaces, not just the first one
+    const adjSurfaces = wall.surfaces.filter(s => s.roomId !== ownerRoomId);
+    for (const adjSurf of adjSurfaces) {
+      const adjRoom = floor.rooms.find(r => r.id === adjSurf.roomId);
+      if (!adjRoom?.polygonVertices?.length) continue;
 
-    const adjRoom = floor.rooms.find(r => r.id === adjSurf.roomId);
-    if (!adjRoom?.polygonVertices?.length) continue;
+      const adjPos = adjRoom.floorPosition || { x: 0, y: 0 };
+      const adjVertex = adjRoom.polygonVertices[adjSurf.edgeIndex];
+      if (!adjVertex) continue;
 
-    const adjPos = adjRoom.floorPosition || { x: 0, y: 0 };
-    const adjVertex = adjRoom.polygonVertices[adjSurf.edgeIndex];
-    if (!adjVertex) continue;
+      const currentDist =
+        (adjPos.x + adjVertex.x - wall.start.x) * normal.x +
+        (adjPos.y + adjVertex.y - wall.start.y) * normal.y;
 
-    const currentDist =
-      (adjPos.x + adjVertex.x - wall.start.x) * normal.x +
-      (adjPos.y + adjVertex.y - wall.start.y) * normal.y;
+      // Skip if adjacent room is on the SAME side as the owner room.
+      // Same-side: |currentDist| ≈ 0 (both touching inner face)
+      // Opposite-side: |currentDist| ≈ thick (should be at outer face)
+      if (Math.abs(currentDist) < thick / 2) {
+        console.log(`[walls] enforceAdjacentPositions: skip same-side room ${adjRoom.id?.slice(0,8)} on wall ${wall.id?.slice(0,8)}, dist=${currentDist.toFixed(1)}, thick=${thick}`);
+        continue;
+      }
+      const delta = thick - currentDist;
+      if (Math.abs(delta) < 0.5) continue;
 
-    // Skip if adjacent room is on the SAME side as the owner room.
-    // Same-side: |currentDist| ≈ 0 (both touching inner face)
-    // Opposite-side: |currentDist| ≈ thick (should be at outer face)
-    if (Math.abs(currentDist) < thick / 2) {
-      console.log(`[walls] enforceAdjacentPositions: skip same-side room ${adjRoom.id?.slice(0,8)} on wall ${wall.id?.slice(0,8)}, dist=${currentDist.toFixed(1)}, thick=${thick}`);
-      continue;
+      adjRoom.floorPosition = {
+        x: adjPos.x + normal.x * delta,
+        y: adjPos.y + normal.y * delta,
+      };
     }
-    const delta = thick - currentDist;
-    if (Math.abs(delta) < 0.5) continue;
-
-    adjRoom.floorPosition = {
-      x: adjPos.x + normal.x * delta,
-      y: adjPos.y + normal.y * delta,
-    };
   }
 }
 
@@ -643,11 +991,15 @@ export function syncFloorWalls(floor, { enforcePositions = true } = {}) {
   const roomIds = new Set(rooms.map(r => r.id));
 
   const wallByEdgeKey = indexWallsByEdge(floor.walls);
-  const touchedWallIds = ensureWallsForEdges(rooms, floor, wallByEdgeKey);
+  const envelope = floor.layout?.envelope;
+  const touchedWallIds = ensureWallsForEdges(rooms, floor, wallByEdgeKey, envelope);
   mergeSharedEdgeWalls(rooms, floor, wallByEdgeKey, touchedWallIds);
   pruneOrphanSurfaces(floor, rooms, roomIds);
   removeStaleWalls(floor, touchedWallIds, roomIds);
   if (enforcePositions) enforceAdjacentPositions(floor);
+
+  // Top-down skeleton enforcement: force skeleton thickness + height on boundary-aligned walls
+  enforceSkeletonWallProperties(floor);
 }
 
 /**
@@ -1276,6 +1628,72 @@ export function computeFloorWallGeometry(floor) {
         p3: desc.extEndPt,         // shared inner vertex
         h: desc.wall.heightEndCm ?? DEFAULT_WALL_HEIGHT_CM,
       };
+    }
+  }
+
+  // Third pass: detect cross-room outer corner gaps and add quad fill prisms.
+  // When two walls from different wall-IDs have outer faces that don't yet meet at a corner,
+  // extend each outer face line until they intersect and fill the gap with a prism.
+  {
+    const CORNER_MAX_GAP_CM = 50; // max extension distance to consider a valid corner
+
+    // Intersect two lines (p1+t*d1, p2+s*d2); return corner point if both
+    // t and s are in (0.1, CORNER_MAX_GAP_CM] (gap exists and isn't huge).
+    const outerLineIntersect = (p1, d1, p2, d2) => {
+      const cross = d1.x * d2.y - d1.y * d2.x;
+      if (Math.abs(cross) < 0.001) return null; // parallel walls
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const t = (dx * d2.y - dy * d2.x) / cross;
+      const s = (dx * d1.y - dy * d1.x) / cross;
+      if (t <= 0.1 || s <= 0.1) return null; // already meeting or wrong direction
+      if (t > CORNER_MAX_GAP_CM || s > CORNER_MAX_GAP_CM) return null; // gap too large
+      return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+    };
+
+    // Each outer endpoint: { wallId, desc, isEnd, outerPt, dir, h }
+    // "isEnd=true"  → outer face extends forward (+dir) past outerEndPt
+    // "isEnd=false" → outer face extends backward (-dir) past outerStartPt
+    const eps = [];
+    for (const [wallId, desc] of result) {
+      const h = desc.wall.heightEndCm ?? DEFAULT_WALL_HEIGHT_CM;
+      eps.push({ wallId, desc, isEnd: true,
+        outerPt: desc.outerEndPt, dir: { x: desc.dirX, y: desc.dirY }, h });
+      eps.push({ wallId, desc, isEnd: false,
+        outerPt: desc.outerStartPt, dir: { x: -desc.dirX, y: -desc.dirY }, h });
+    }
+
+    for (let i = 0; i < eps.length; i++) {
+      for (let j = i + 1; j < eps.length; j++) {
+        const eA = eps[i], eB = eps[j];
+        if (eA.wallId === eB.wallId) continue;
+
+        const pCorner = outerLineIntersect(eA.outerPt, eA.dir, eB.outerPt, eB.dir);
+        if (!pCorner) continue;
+
+        // Quad fill: p1=eA outer endpoint, p2=eB outer endpoint,
+        // p4=outer corner, p3=inner corner (parallelogram: p1+p2-p4)
+        const fill = {
+          p1: eA.outerPt,
+          p2: eB.outerPt,
+          p3: { x: eA.outerPt.x + eB.outerPt.x - pCorner.x,
+                y: eA.outerPt.y + eB.outerPt.y - pCorner.y },
+          p4: pCorner,
+          h: Math.max(eA.h, eB.h),
+        };
+
+        // Assign to eA only (avoid duplicating the fill on both walls)
+        if (eA.isEnd) {
+          if (!eA.desc.endCornerFill) {
+            eA.desc.endCornerFill = fill;
+            console.log(`[walls] cross-room corner fill: end of ${eA.wallId.slice(0, 8)} + ${eB.isEnd ? 'end' : 'start'} of ${eB.wallId.slice(0, 8)}, corner=(${pCorner.x.toFixed(1)},${pCorner.y.toFixed(1)})`);
+          }
+        } else {
+          if (!eA.desc.startCornerFill) {
+            eA.desc.startCornerFill = fill;
+            console.log(`[walls] cross-room corner fill: start of ${eA.wallId.slice(0, 8)} + ${eB.isEnd ? 'end' : 'start'} of ${eB.wallId.slice(0, 8)}, corner=(${pCorner.x.toFixed(1)},${pCorner.y.toFixed(1)})`);
+          }
+        }
+      }
     }
   }
 

@@ -83,6 +83,66 @@ function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd) {
 }
 
 /**
+ * Render a corner fill prism into a THREE.js scene.
+ * Handles both triangle fills (same-room reflex vertices, p4 absent) and
+ * quad fills (cross-room corner gaps, p4 = outer corner present).
+ *
+ * Triangle fill (p4 absent): p1, p2 are the outer face endpoints; p3 is the inner vertex.
+ * Quad fill (p4 present): p1, p2 are outer face endpoints of the two walls,
+ *   p4 is the outer corner (line intersection), p3 = p1+p2-p4 (inner corner).
+ */
+function renderCornerFill(fill, scene, baseColor, linesMat) {
+  const { p1, p2, p3, p4, h } = fill;
+  let positions, indices;
+
+  if (p4) {
+    // Quad fill: vertices 0-3 floor, 4-7 ceiling
+    // 0=p1, 1=p2, 2=p3(inner), 3=p4(outer corner)
+    positions = new Float32Array([
+      p1.x, 0, p1.y,  // 0 p1 floor
+      p2.x, 0, p2.y,  // 1 p2 floor
+      p3.x, 0, p3.y,  // 2 p3 floor (inner corner)
+      p4.x, 0, p4.y,  // 3 p4 floor (outer corner)
+      p1.x, h, p1.y,  // 4 p1 ceil
+      p2.x, h, p2.y,  // 5 p2 ceil
+      p3.x, h, p3.y,  // 6 p3 ceil (inner corner)
+      p4.x, h, p4.y,  // 7 p4 ceil (outer corner)
+    ]);
+    indices = [
+      // Top face (p3→p1→p4→p2 quad, split into 2 triangles)
+      6, 4, 7,  6, 7, 5,
+      // Side A: p1 → p4 (outer face along wall A direction)
+      0, 3, 7,  0, 7, 4,
+      // Side B: p4 → p2 (outer face along wall B direction)
+      3, 1, 5,  3, 5, 7,
+    ];
+  } else {
+    // Triangle fill (same as before — same-room reflex vertex gap)
+    positions = new Float32Array([
+      p1.x, 0, p1.y,  // 0: p1 floor
+      p2.x, 0, p2.y,  // 1: p2 floor
+      p3.x, 0, p3.y,  // 2: p3 floor (inner vertex)
+      p1.x, h, p1.y,  // 3: p1 ceiling
+      p2.x, h, p2.y,  // 4: p2 ceiling
+      p3.x, h, p3.y,  // 5: p3 ceiling
+    ]);
+    indices = [
+      3, 5, 4,       // top triangle
+      0, 1, 4,  0, 4, 3,  // outer side (p1–p2)
+    ];
+  }
+
+  const fillGeo = new THREE.BufferGeometry();
+  fillGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  fillGeo.setIndex(indices);
+  fillGeo.computeVertexNormals();
+  scene.add(new THREE.Mesh(fillGeo, new THREE.MeshLambertMaterial({
+    color: baseColor, side: THREE.DoubleSide,
+  })));
+  scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(fillGeo, 30), linesMat));
+}
+
+/**
  * Build wall geometry with doorway holes cut through it.
  * For walls without doorways, produces a simple 8-vertex box.
  * For walls with doorways, uses ShapeGeometry for inner/outer faces
@@ -717,32 +777,14 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     const linesMat = new THREE.LineBasicMaterial({ color: edgeColor });
     scene.add(new THREE.LineSegments(edgesGeo, linesMat));
 
-    // Corner fill for reflex vertices: closes the open outer-corner gap where
-    // two adjacent walls' outer faces don't meet (extEnd = extStart = 0).
-    // Renders the missing top triangle and outer-side quad only; the two
-    // inner-side faces are already covered by the adjacent walls' end caps.
+    // Corner fills: close outer-corner gaps.
+    // endCornerFill: same-room reflex vertex gap (triangle) or cross-room end gap (quad).
+    // startCornerFill: cross-room start gap (quad).
     if (wallDesc.endCornerFill) {
-      const { p1, p2, p3, h } = wallDesc.endCornerFill;
-      const fillPositions = new Float32Array([
-        p1.x, 0, p1.y,  // 0: p1 floor
-        p2.x, 0, p2.y,  // 1: p2 floor
-        p3.x, 0, p3.y,  // 2: p3 floor (inner vertex)
-        p1.x, h, p1.y,  // 3: p1 ceiling
-        p2.x, h, p2.y,  // 4: p2 ceiling
-        p3.x, h, p3.y,  // 5: p3 ceiling
-      ]);
-      const fillIdx = [
-        3, 5, 4,       // top triangle
-        0, 1, 4,  0, 4, 3,  // outer side (p1–p2)
-      ];
-      const fillGeo = new THREE.BufferGeometry();
-      fillGeo.setAttribute('position', new THREE.BufferAttribute(fillPositions, 3));
-      fillGeo.setIndex(fillIdx);
-      fillGeo.computeVertexNormals();
-      scene.add(new THREE.Mesh(fillGeo, new THREE.MeshLambertMaterial({
-        color: baseColor, side: THREE.DoubleSide,
-      })));
-      scene.add(new THREE.LineSegments(new THREE.EdgesGeometry(fillGeo, 30), linesMat));
+      renderCornerFill(wallDesc.endCornerFill, scene, baseColor, linesMat);
+    }
+    if (wallDesc.startCornerFill) {
+      renderCornerFill(wallDesc.startCornerFill, scene, baseColor, linesMat);
     }
 
     // Render tiles for each surface

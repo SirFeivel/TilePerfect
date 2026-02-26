@@ -5,6 +5,8 @@ import { svgEl, roomPolygon } from "./geometry.js";
 import { t } from "./i18n.js";
 import { createSurface } from "./surface.js";
 import { pointerToSvgXY, svgPointToClient } from "./svg-coords.js";
+import { computeStructuralBoundaries } from "./skeleton.js";
+import { getWallNormal } from "./walls.js";
 
 const MIN_POINTS = 3;
 const CLOSE_THRESHOLD_PX = 15; // Pixels to detect closing click on first point
@@ -242,6 +244,127 @@ function findNearestEdgePointOnRoom(mousePoint, edges, roomId) {
 }
 
 /**
+ * Find the nearest point on any structural boundary (envelope/spanning wall) to the cursor.
+ * H targets snap the Y coordinate; V targets snap the X coordinate.
+ * @param {{x: number, y: number}} point - Cursor position in floor coords
+ * @param {Array} hTargets - Horizontal boundary targets from computeStructuralBoundaries
+ * @param {Array} vTargets - Vertical boundary targets from computeStructuralBoundaries
+ * @param {number} threshold - Max distance to snap
+ * @returns {{point: {x: number, y: number}, type: string, thickness: number, distance: number} | null}
+ */
+export function findNearestBoundaryPoint(point, hTargets, vTargets, threshold) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+
+  // Check H targets (lines at y=coord, x in [rangeMin, rangeMax])
+  if (Array.isArray(hTargets)) {
+    for (const t of hTargets) {
+      const clampedX = Math.max(t.rangeMin, Math.min(t.rangeMax, point.x));
+      const dist = Math.hypot(clampedX - point.x, t.coord - point.y);
+      if (dist <= threshold && dist < bestDist) {
+        bestDist = dist;
+        best = { point: { x: clampedX, y: t.coord }, type: t.type, thickness: t.thickness, distance: dist };
+      }
+    }
+  }
+
+  // Check V targets (lines at x=coord, y in [rangeMin, rangeMax])
+  if (Array.isArray(vTargets)) {
+    for (const t of vTargets) {
+      const clampedY = Math.max(t.rangeMin, Math.min(t.rangeMax, point.y));
+      const dist = Math.hypot(t.coord - point.x, clampedY - point.y);
+      if (dist <= threshold && dist < bestDist) {
+        bestDist = dist;
+        best = { point: { x: t.coord, y: clampedY }, type: t.type, thickness: t.thickness, distance: dist };
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Find the nearest H/V boundary intersection (corner) to the cursor.
+ * A corner exists at (v.coord, h.coord) when each boundary's range includes the other axis's coord.
+ * @param {{x: number, y: number}} point - Cursor position in floor coords
+ * @param {Array} hTargets - Horizontal boundary targets
+ * @param {Array} vTargets - Vertical boundary targets
+ * @param {number} threshold - Max distance to snap
+ * @returns {{point: {x: number, y: number}, type: string, distance: number} | null}
+ */
+export function findNearestCornerPoint(point, hTargets, vTargets, threshold) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  if (!Array.isArray(hTargets) || !Array.isArray(vTargets)) return null;
+
+  let best = null;
+  let bestDist = Infinity;
+
+  for (const h of hTargets) {
+    for (const v of vTargets) {
+      // Corner exists only when each boundary's range includes the other's coord
+      if (v.coord < h.rangeMin || v.coord > h.rangeMax) continue;
+      if (h.coord < v.rangeMin || h.coord > v.rangeMax) continue;
+
+      const corner = { x: v.coord, y: h.coord };
+      const dist = Math.hypot(corner.x - point.x, corner.y - point.y);
+      if (dist <= threshold && dist < bestDist) {
+        bestDist = dist;
+        best = { point: corner, type: "corner", distance: dist };
+      }
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Compute outer face snap targets from existing room walls.
+ * For each axis-aligned wall, the outer face is at wallCoord + normal * thickness —
+ * i.e. the position where an adjacent room's inner edge should sit.
+ * Returns targets in the same { hTargets, vTargets } format as computeStructuralBoundaries.
+ * @param {Object} floor - Floor with rooms[] and walls[]
+ * @returns {{ hTargets: Array, vTargets: Array }}
+ */
+export function computeRoomWallOuterFaces(floor) {
+  const hTargets = [];
+  const vTargets = [];
+  if (!floor?.walls?.length || !floor?.rooms?.length) return { hTargets, vTargets };
+
+  for (const wall of floor.walls) {
+    const thick = wall.thicknessCm;
+    if (!thick || thick <= 0) continue;
+
+    const dx = wall.end.x - wall.start.x;
+    const dy = wall.end.y - wall.start.y;
+
+    const normal = getWallNormal(wall, floor);
+
+    if (Math.abs(dy) < 0.5 && Math.abs(dx) > 1) {
+      // H wall — outer face offset in Y
+      const wallY = (wall.start.y + wall.end.y) / 2;
+      const outerY = wallY + normal.y * thick;
+      const rangeMin = Math.min(wall.start.x, wall.end.x);
+      const rangeMax = Math.max(wall.start.x, wall.end.x);
+      hTargets.push({ coord: outerY, thickness: thick, type: 'room-outer', rangeMin, rangeMax });
+      console.log(`[poly-draw] room outer H: y=${outerY.toFixed(1)} (inner=${wallY.toFixed(1)}, thick=${thick}cm)`);
+    } else if (Math.abs(dx) < 0.5 && Math.abs(dy) > 1) {
+      // V wall — outer face offset in X
+      const wallX = (wall.start.x + wall.end.x) / 2;
+      const outerX = wallX + normal.x * thick;
+      const rangeMin = Math.min(wall.start.y, wall.end.y);
+      const rangeMax = Math.max(wall.start.y, wall.end.y);
+      vTargets.push({ coord: outerX, thickness: thick, type: 'room-outer', rangeMin, rangeMax });
+      console.log(`[poly-draw] room outer V: x=${outerX.toFixed(1)} (inner=${wallX.toFixed(1)}, thick=${thick}cm)`);
+    }
+    // Diagonal walls skipped — don't occur in rectified assisted-mode floor plans
+  }
+
+  return { hTargets, vTargets };
+}
+
+/**
  * Check if a point is inside a polygon using ray casting algorithm
  */
 function isPointInPolygon(point, polygon) {
@@ -313,9 +436,16 @@ export function snapToGrid(value, gridSize = SNAP_GRID_CM) {
 }
 
 /**
- * Snap a point to the grid, optionally constraining angle to 45° increments
+ * Snap a point to the grid, optionally constraining angle.
+ * - Shift key: constrain to 15° increments (manual mode)
+ * - validAngles: always constrain to envelope angles (assisted mode)
+ * - Shift + validAngles: Shift takes priority (finer control)
+ * @param {{x: number, y: number}} point
+ * @param {{x: number, y: number} | null} lastPoint
+ * @param {boolean} shiftKey
+ * @param {number[] | null} [validAngles=null] - Envelope angles in degrees (e.g. [0,90,180,270])
  */
-function snapPoint(point, lastPoint, shiftKey) {
+function snapPoint(point, lastPoint, shiftKey, validAngles = null) {
   let snapped = {
     x: snapToGrid(point.x),
     y: snapToGrid(point.y)
@@ -335,9 +465,57 @@ function snapPoint(point, lastPoint, shiftKey) {
     // Re-snap to grid after angle constraint
     snapped.x = snapToGrid(snapped.x);
     snapped.y = snapToGrid(snapped.y);
+  } else if (validAngles && validAngles.length > 0 && lastPoint) {
+    // Assisted mode: constrain to envelope valid angles
+    const dx = snapped.x - lastPoint.x;
+    const dy = snapped.y - lastPoint.y;
+    const angleDeg = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+    const dist = Math.hypot(dx, dy);
+
+    // Find nearest valid angle
+    let bestAngle = validAngles[0];
+    let bestDelta = Infinity;
+    for (const va of validAngles) {
+      let delta = Math.abs(angleDeg - va);
+      if (delta > 180) delta = 360 - delta;
+      if (delta < bestDelta) {
+        bestDelta = delta;
+        bestAngle = va;
+      }
+    }
+
+    const bestRad = bestAngle * Math.PI / 180;
+    snapped = {
+      x: lastPoint.x + Math.cos(bestRad) * dist,
+      y: lastPoint.y + Math.sin(bestRad) * dist
+    };
+    snapped.x = snapToGrid(snapped.x);
+    snapped.y = snapToGrid(snapped.y);
   }
 
   return snapped;
+}
+
+/**
+ * Find the nearest valid angle (degrees) to the vector (dx, dy).
+ * @param {number} dx
+ * @param {number} dy
+ * @param {number[]} validAngles - e.g. [0, 90, 180, 270]
+ * @returns {number} Nearest valid angle in degrees
+ */
+function _nearestValidAngle(dx, dy, validAngles) {
+  const angleDeg = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+  let bestAngle = validAngles[0];
+  let bestDelta = Infinity;
+  for (const va of validAngles) {
+    let delta = Math.abs(angleDeg - va);
+    if (delta > 180) delta = 360 - delta;
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      bestAngle = va;
+    }
+  }
+  return bestAngle;
 }
 
 /**
@@ -358,7 +536,9 @@ export function snapToRoomGeometry(
   lastPoint,
   shiftKey,
   vertexThreshold = VERTEX_SNAP_THRESHOLD_CM,
-  edgeThreshold = EDGE_SNAP_THRESHOLD_CM
+  edgeThreshold = EDGE_SNAP_THRESHOLD_CM,
+  boundaryTargets = null,
+  validAngles = null
 ) {
   // Validate input point
   if (!point || !Number.isFinite(Number(point.x)) || !Number.isFinite(Number(point.y))) {
@@ -396,9 +576,63 @@ export function snapToRoomGeometry(
     }
   }
 
-  // Fall back to grid snapping
+  // Then try corner snapping (H∩V intersection — wider threshold, stronger pull)
+  if (boundaryTargets) {
+    const CORNER_THRESHOLD = edgeThreshold * 1.5;
+    const nearestCorner = findNearestCornerPoint(
+      normalizedPoint, boundaryTargets.hTargets, boundaryTargets.vTargets, CORNER_THRESHOLD
+    );
+    if (nearestCorner && nearestCorner.distance <= CORNER_THRESHOLD) {
+      return { point: nearestCorner.point, type: "corner" };
+    }
+  }
+
+  // Then try boundary snapping (envelope/spanning wall faces)
+  if (boundaryTargets) {
+    const nearestBoundary = findNearestBoundaryPoint(
+      normalizedPoint, boundaryTargets.hTargets, boundaryTargets.vTargets, edgeThreshold
+    );
+    if (nearestBoundary && nearestBoundary.distance <= edgeThreshold) {
+      const bp = { ...nearestBoundary.point };
+
+      // When snapping to a boundary, also constrain the free axis to valid angles.
+      // H boundary fixes y → constrain x from lastPoint. V boundary fixes x → constrain y.
+      if (lastPoint && validAngles && validAngles.length > 0) {
+        const dx = bp.x - lastPoint.x;
+        const dy = bp.y - lastPoint.y;
+        const isHsnap = Math.abs(bp.y - normalizedPoint.y) > Math.abs(bp.x - normalizedPoint.x);
+
+        if (isHsnap) {
+          // H boundary locked y — find best valid angle and compute x from it
+          const bestAngle = _nearestValidAngle(dx, dy, validAngles);
+          const bestRad = bestAngle * Math.PI / 180;
+          const sinA = Math.sin(bestRad);
+          // If angle is horizontal (sin≈0), x is free; otherwise x = lastPoint.x + dy/tan(angle)
+          if (Math.abs(sinA) > 0.01) {
+            bp.x = snapToGrid(lastPoint.x + dy / Math.tan(bestRad));
+          }
+        } else {
+          // V boundary locked x — find best valid angle and compute y from it
+          const bestAngle = _nearestValidAngle(dx, dy, validAngles);
+          const bestRad = bestAngle * Math.PI / 180;
+          const cosA = Math.cos(bestRad);
+          // If angle is vertical (cos≈0), y is free; otherwise y = lastPoint.y + dx*tan(angle)
+          if (Math.abs(cosA) > 0.01) {
+            bp.y = snapToGrid(lastPoint.y + dx * Math.tan(bestRad));
+          }
+        }
+      }
+
+      return {
+        point: bp,
+        type: "boundary"
+      };
+    }
+  }
+
+  // Fall back to grid snapping (with angle constraint in assisted mode)
   return {
-    point: snapPoint(normalizedPoint, lastPoint, shiftKey),
+    point: snapPoint(normalizedPoint, lastPoint, shiftKey, validAngles),
     type: "grid"
   };
 }
@@ -418,6 +652,8 @@ export function createPolygonDrawController({
   let previewGroup = null;
   let onComplete = null;
   let onCancel = null;
+  let continuous = false; // Stay in draw mode after completing a room
+  let persistentOnCancel = null; // onCancel preserved across rooms in continuous mode
 
   // Edge snapping state
   let edgeSnapMode = false; // True when existing rooms exist and we need to snap first two points
@@ -430,6 +666,9 @@ export function createPolygonDrawController({
   let isMouseInsideRoom = false; // True when mouse is inside an existing room
   let currentMousePoint = null; // Current mouse position for preview
   let roomBoundsPolygon = null; // For room view: restrict clicks to within room polygon
+  let assistedMode = false; // True when envelope + calibrated background exist
+  let boundaryTargets = { hTargets: [], vTargets: [] }; // Structural boundaries for snapping
+  let assistedAngles = null; // Valid angles from envelope (e.g. [0, 90, 180, 270])
 
   function startDrawing(options) {
     const svg = getSvg();
@@ -439,9 +678,13 @@ export function createPolygonDrawController({
     if (typeof options === 'function') {
       onComplete = options;
       onCancel = null;
+      continuous = false;
+      persistentOnCancel = null;
     } else {
       onComplete = options?.onComplete || null;
       onCancel = options?.onCancel || null;
+      continuous = !!(options?.continuous);
+      persistentOnCancel = continuous ? (options?.onCancel || null) : null;
     }
 
     isDrawing = true;
@@ -458,9 +701,31 @@ export function createPolygonDrawController({
     const floor = getCurrentFloor();
     cachedFloor = floor;
     const hasExistingRooms = floor?.rooms?.length > 0;
-    edgeSnapMode = hasExistingRooms && !options?.disableEdgeSnap;
 
-    if (edgeSnapMode) {
+    // Assisted mode: enabled by user toggle (requires envelope + calibrated)
+    const envelope = floor?.layout?.envelope;
+    const calibrated = floor?.layout?.background?.scale?.calibrated;
+    assistedMode = !!(envelope && calibrated && floor?.layout?.assistedTracing);
+    if (assistedMode) {
+      boundaryTargets = computeStructuralBoundaries(envelope);
+      if (floor.walls?.length > 0) {
+        const roomOuter = computeRoomWallOuterFaces(floor);
+        boundaryTargets.hTargets.push(...roomOuter.hTargets);
+        boundaryTargets.vTargets.push(...roomOuter.vTargets);
+        console.log(`[poly-draw] room outer faces: ${roomOuter.hTargets.length} H + ${roomOuter.vTargets.length} V added`);
+      }
+      assistedAngles = Array.isArray(envelope.validAngles) && envelope.validAngles.length > 0
+        ? envelope.validAngles : null;
+      console.log(`[poly-draw] assisted mode: ${boundaryTargets.hTargets.length} H + ${boundaryTargets.vTargets.length} V boundary targets, angles=${JSON.stringify(assistedAngles)}`);
+    } else {
+      boundaryTargets = { hTargets: [], vTargets: [] };
+      assistedAngles = null;
+    }
+
+    // In assisted mode: skip forced edge snap, but still cache room geometry
+    edgeSnapMode = hasExistingRooms && !options?.disableEdgeSnap && !assistedMode;
+
+    if (edgeSnapMode || (assistedMode && hasExistingRooms)) {
       // Cache all room edges and vertices for snapping
       roomEdges = getRoomEdges(floor);
       roomVertices = getRoomVertices(floor);
@@ -474,7 +739,9 @@ export function createPolygonDrawController({
     svg.appendChild(previewGroup);
 
     // Add hint overlay
-    if (edgeSnapMode) {
+    if (assistedMode) {
+      updateHint("Trace room inner edges • Shift for 15° • Snapping to envelope + rooms");
+    } else if (edgeSnapMode) {
       updateHint("Click on an existing room edge to start • Move along edge to position");
     } else {
       updateHint("Click to place first corner point (Shift for 15° angles)");
@@ -510,6 +777,9 @@ export function createPolygonDrawController({
     isMouseInsideRoom = false;
     currentMousePoint = null;
     roomBoundsPolygon = null;
+    assistedMode = false;
+    boundaryTargets = { hTargets: [], vTargets: [] };
+    assistedAngles = null;
 
     if (previewGroup) {
       previewGroup.remove();
@@ -533,14 +803,14 @@ export function createPolygonDrawController({
 
     if (cancelled) {
       points = [];
-      // Call onCancel callback if provided
-      if (onCancel) {
-        onCancel();
-      }
+      const cancelCb = persistentOnCancel || onCancel;
+      if (cancelCb) cancelCb();
     }
-    // Always clear callbacks
+    // Always clear callbacks and mode flags
     onComplete = null;
     onCancel = null;
+    continuous = false;
+    persistentOnCancel = null;
   }
 
   function handleClick(e) {
@@ -605,13 +875,14 @@ export function createPolygonDrawController({
     let snappedPoint;
     let snapType = "grid";
 
-    // Use geometry snapping if we have existing rooms
-    if (edgeSnapMode && roomVertices.length > 0) {
-      const snapResult = snapToRoomGeometry(svgPoint, roomVertices, roomEdges, lastPoint, e.shiftKey);
+    // Use geometry snapping if we have existing rooms or assisted mode
+    if ((edgeSnapMode || assistedMode) && (roomVertices.length > 0 || boundaryTargets.hTargets.length > 0 || boundaryTargets.vTargets.length > 0)) {
+      const snapResult = snapToRoomGeometry(svgPoint, roomVertices, roomEdges, lastPoint, e.shiftKey,
+        VERTEX_SNAP_THRESHOLD_CM, EDGE_SNAP_THRESHOLD_CM, assistedMode ? boundaryTargets : null, assistedAngles);
       snappedPoint = snapResult.point;
       snapType = snapResult.type;
     } else {
-      snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey);
+      snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey, assistedAngles);
     }
 
     // For room view (exclusions): restrict clicks to within room bounds
@@ -669,8 +940,8 @@ export function createPolygonDrawController({
     }
 
     // No preview until we have at least one point (for free drawing without edge snap)
-    // But allow snapping preview even with 0 points if we have geometry
-    if (points.length === 0 && !edgeSnapMode) return;
+    // But allow snapping preview even with 0 points if we have geometry or assisted mode
+    if (points.length === 0 && !edgeSnapMode && !assistedMode) return;
 
     const lastPoint = points.length > 0 ? points[points.length - 1] : null;
 
@@ -681,20 +952,18 @@ export function createPolygonDrawController({
     let snappedPoint;
     let snapType = "grid";
 
-    // First try geometry snapping if we have existing rooms
-    if (edgeSnapMode && roomVertices.length > 0) {
-      const snapResult = snapToRoomGeometry(svgPoint, roomVertices, roomEdges, lastPoint, e.shiftKey);
+    // First try geometry snapping if we have existing rooms or assisted mode
+    if ((edgeSnapMode || assistedMode) && (roomVertices.length > 0 || boundaryTargets.hTargets.length > 0 || boundaryTargets.vTargets.length > 0)) {
+      const snapResult = snapToRoomGeometry(svgPoint, roomVertices, roomEdges, lastPoint, e.shiftKey,
+        VERTEX_SNAP_THRESHOLD_CM, EDGE_SNAP_THRESHOLD_CM, assistedMode ? boundaryTargets : null, assistedAngles);
       if (snapResult.type !== "grid") {
         snappedPoint = snapResult.point;
         snapType = snapResult.type;
       }
     }
 
-    // If no geometry snap, use angle constraint or grid snap
     if (!snappedPoint) {
-      // Shift snaps angle to previous point only - no dual-constraint
-      // To close the polygon, click near the first point
-      snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey);
+      snappedPoint = snapPoint(svgPoint, lastPoint, e.shiftKey, assistedAngles);
     }
 
     // Mark as inside-room only when NOT snapped to geometry — a snapped vertex
@@ -730,6 +999,42 @@ export function createPolygonDrawController({
       x: p1.x + t * cos1,
       y: p1.y + t * sin1
     };
+  }
+
+  /**
+   * Dual-constraint closing snap: when the polygon is closable, find the point Q
+   * where the incoming edge (lastPoint→Q at a valid angle) meets the closing edge
+   * (Q→points[0] at a valid angle). Returns the nearest valid Q within DUAL_SNAP_CM,
+   * or null if none found.
+   *
+   * Direction escape: after finding the best Q, verify that the cursor's direction
+   * from lastPoint is within ESCAPE_ANGLE_DEG of the direction toward Q. If the
+   * user is pulling in a different valid direction (e.g. perpendicular to lay an
+   * intermediate edge), the snap releases and returns null.
+   * Skipped when cursor is very close to lastPoint (direction is undefined).
+   */
+  /**
+   * Find the best closing corner candidate: the intersection of a valid incoming
+   * edge from lastPoint and a valid closing edge from P0, nearest to the cursor.
+   * Returns a grid-snapped point or null. No cursor forcing — for display only.
+   */
+  function _findBestClosingQ(svgPoint, lastPoint, P0, validAngles) {
+    const MAX_DIST_CM = 80;
+    let bestQ = null;
+    let bestDist = Infinity;
+
+    for (const inAngle of validAngles) {
+      const inRad = inAngle * Math.PI / 180;
+      for (const closeAngle of validAngles) {
+        const closeRad = ((closeAngle + 180) % 360) * Math.PI / 180;
+        const Q = findLineIntersection(lastPoint, inRad, P0, closeRad);
+        if (!Q || !Number.isFinite(Q.x) || !Number.isFinite(Q.y)) continue;
+        const dist = Math.hypot(Q.x - svgPoint.x, Q.y - svgPoint.y);
+        if (dist < MAX_DIST_CM && dist < bestDist) { bestDist = dist; bestQ = Q; }
+      }
+    }
+
+    return bestQ ? { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) } : null;
   }
 
   function handleRightClick(e) {
@@ -821,6 +1126,40 @@ export function createPolygonDrawController({
     }
   }
 
+  // Append a dimension label for an edge (p1→p2) to group.
+  // Label sits at the midpoint, offset 8cm perpendicular to the edge, rotated to match the edge.
+  function _addEdgeLengthLabel(group, p1, p2) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5) return;
+    const mx = (p1.x + p2.x) / 2;
+    const my = (p1.y + p2.y) / 2;
+    const nx = -dy / len, ny = dx / len;
+    const offset = 8;
+    const x = mx + nx * offset;
+    const y = my + ny * offset;
+    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angle > 90) angle -= 180;
+    else if (angle < -90) angle += 180;
+    const text = `${Number(len.toFixed(1))} cm`;
+    const g = svgEl("g");
+    if (angle) g.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
+    const t = svgEl("text", {
+      x, y,
+      fill: "rgba(231,238,252,0.95)",
+      stroke: "rgba(20,20,20,0.75)",
+      "stroke-width": 3,
+      "paint-order": "stroke fill",
+      "font-size": 9,
+      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      "text-anchor": "middle",
+      "dominant-baseline": "middle"
+    });
+    t.textContent = text;
+    g.appendChild(t);
+    group.appendChild(g);
+  }
+
   function updatePreview(mousePoint = null) {
     if (!isDrawing) return;
 
@@ -839,14 +1178,12 @@ export function createPolygonDrawController({
 
     // Edge snap mode preview (before any points or with one point)
     if (edgeSnapMode && points.length < 2 && currentEdgeSnapPoint) {
-      // Draw the edge snap marker (green circle)
+      // Draw the edge snap marker
       const snapCircle = svgEl("circle", {
         cx: currentEdgeSnapPoint.x,
         cy: currentEdgeSnapPoint.y,
-        r: 8,
-        fill: "#22c55e",
-        stroke: "#fff",
-        "stroke-width": 2,
+        r: 7, fill: "#22c55e", "fill-opacity": 0.2,
+        stroke: "#22c55e", "stroke-width": 1.5, "stroke-opacity": 0.8,
         class: "edge-snap-marker"
       });
       previewGroup.appendChild(snapCircle);
@@ -861,6 +1198,7 @@ export function createPolygonDrawController({
           "stroke-dasharray": "5,5"
         });
         previewGroup.appendChild(linePath);
+        _addEdgeLengthLabel(previewGroup, points[0], currentEdgeSnapPoint);
 
         // Draw first point
         const firstCircle = svgEl("circle", {
@@ -876,7 +1214,29 @@ export function createPolygonDrawController({
       return;
     }
 
-    if (points.length === 0) return;
+    // When no points placed yet, show only the snap indicator so the user
+    // can see where the first click will land (critical in assisted mode).
+    if (points.length === 0) {
+      if (mousePoint && (assistedMode || edgeSnapMode || roomVertices.length > 0)) {
+        const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge";
+        const isBoundary = currentSnapType === "boundary";
+        const isCorner = currentSnapType === "corner";
+        const snapColor = isCorner ? "#eab308" : isBoundary ? "#f97316" : isSnapped ? "#22c55e" : "#3b82f6";
+        previewGroup.appendChild(svgEl("circle", {
+          cx: mousePoint.x, cy: mousePoint.y,
+          r: 7, fill: snapColor, "fill-opacity": 0.2,
+          stroke: snapColor, "stroke-width": 1.5, "stroke-opacity": 0.8
+        }));
+        if (isCorner) {
+          const arm = 11;
+          previewGroup.appendChild(svgEl("path", {
+            d: `M ${mousePoint.x - arm} ${mousePoint.y} L ${mousePoint.x + arm} ${mousePoint.y} M ${mousePoint.x} ${mousePoint.y - arm} L ${mousePoint.x} ${mousePoint.y + arm}`,
+            stroke: snapColor, "stroke-width": 1.5, fill: "none", opacity: 0.8
+          }));
+        }
+      }
+      return;
+    }
 
     // Draw lines between points
     const allPoints = [...points];
@@ -905,6 +1265,17 @@ export function createPolygonDrawController({
       previewGroup.appendChild(linePath);
     }
 
+    // Edge length labels: committed edges, live edge, and closing-edge preview
+    for (let i = 0; i < points.length - 1; i++) {
+      _addEdgeLengthLabel(previewGroup, points[i], points[i + 1]);
+    }
+    if (mousePoint && points.length >= 1) {
+      _addEdgeLengthLabel(previewGroup, points[points.length - 1], mousePoint);
+    }
+    if (points.length >= MIN_POINTS && mousePoint) {
+      _addEdgeLengthLabel(previewGroup, mousePoint, points[0]);
+    }
+
     // Draw filled polygon preview if closing
     if (points.length >= MIN_POINTS) {
       const closedPath = points.map((p, i) =>
@@ -917,6 +1288,25 @@ export function createPolygonDrawController({
         stroke: "none"
       });
       previewGroup.insertBefore(fillPath, previewGroup.firstChild);
+    }
+
+    // Ghost closing-corner indicator: show where the polygon can close with valid
+    // angles on both the incoming and closing edge. Visual guide only — no cursor forcing.
+    if (points.length >= MIN_POINTS && mousePoint && assistedAngles?.length > 0) {
+      const lastPt = points[points.length - 1];
+      const ghostQ = _findBestClosingQ(mousePoint, lastPt, points[0], assistedAngles);
+      if (ghostQ) {
+        previewGroup.appendChild(svgEl("circle", {
+          cx: ghostQ.x, cy: ghostQ.y,
+          r: 7, fill: "#22c55e", "fill-opacity": 0.1,
+          stroke: "#22c55e", "stroke-width": 1, "stroke-dasharray": "3,2", "stroke-opacity": 0.5
+        }));
+        const arm = 5;
+        previewGroup.appendChild(svgEl("path", {
+          d: `M ${ghostQ.x - arm} ${ghostQ.y} L ${ghostQ.x + arm} ${ghostQ.y} M ${ghostQ.x} ${ghostQ.y - arm} L ${ghostQ.x} ${ghostQ.y + arm}`,
+          stroke: "#22c55e", "stroke-width": 1, "stroke-opacity": 0.5, fill: "none"
+        }));
+      }
     }
 
     // Draw vertex circles
@@ -938,49 +1328,31 @@ export function createPolygonDrawController({
 
     // Draw mouse position marker
     if (mousePoint) {
-      // Show red marker if inside a room, green if snapped to geometry, blue otherwise
       const isInvalid = isMouseInsideRoom;
       const isSnapped = currentSnapType === "vertex" || currentSnapType === "edge";
+      const isBoundary = currentSnapType === "boundary";
+      const isCorner = currentSnapType === "corner";
 
-      // Choose appearance based on state
-      let fillColor, strokeColor, radius, strokeWidth;
-      if (isInvalid) {
-        fillColor = "rgba(239, 68, 68, 0.7)";
-        strokeColor = "#dc2626";
-        radius = 6;
-        strokeWidth = 2;
-      } else if (isSnapped) {
-        // Green marker for geometry snaps
-        fillColor = "#22c55e";
-        strokeColor = "#fff";
-        radius = currentSnapType === "vertex" ? 8 : 6;
-        strokeWidth = 2;
-      } else {
-        fillColor = "rgba(59, 130, 246, 0.5)";
-        strokeColor = "#3b82f6";
-        radius = 4;
-        strokeWidth = 1;
-      }
+      // Unified snap color — ring style so cursor crosshair stays visible
+      const snapColor = isInvalid ? "#ef4444"
+        : isCorner    ? "#eab308"
+        : isBoundary  ? "#f97316"
+        : isSnapped   ? "#22c55e"
+        :               "#3b82f6";
 
-      const mouseCircle = svgEl("circle", {
-        cx: mousePoint.x,
-        cy: mousePoint.y,
-        r: radius,
-        fill: fillColor,
-        stroke: strokeColor,
-        "stroke-width": strokeWidth
-      });
-      previewGroup.appendChild(mouseCircle);
+      previewGroup.appendChild(svgEl("circle", {
+        cx: mousePoint.x, cy: mousePoint.y,
+        r: 7, fill: snapColor, "fill-opacity": 0.2,
+        stroke: snapColor, "stroke-width": 1.5, "stroke-opacity": 0.8
+      }));
 
-      // Add snap type indicator for vertex snaps (diamond shape)
-      if (currentSnapType === "vertex") {
-        const diamond = svgEl("path", {
-          d: `M ${mousePoint.x} ${mousePoint.y - 12} L ${mousePoint.x + 5} ${mousePoint.y - 7} L ${mousePoint.x} ${mousePoint.y - 2} L ${mousePoint.x - 5} ${mousePoint.y - 7} Z`,
-          fill: "#22c55e",
-          stroke: "#fff",
-          "stroke-width": 1
-        });
-        previewGroup.appendChild(diamond);
+      // Crosshair lines for corner snaps (both axes locked)
+      if (isCorner) {
+        const arm = 11;
+        previewGroup.appendChild(svgEl("path", {
+          d: `M ${mousePoint.x - arm} ${mousePoint.y} L ${mousePoint.x + arm} ${mousePoint.y} M ${mousePoint.x} ${mousePoint.y - arm} L ${mousePoint.x} ${mousePoint.y + arm}`,
+          stroke: snapColor, "stroke-width": 1.5, fill: "none", opacity: 0.8
+        }));
       }
     }
   }
@@ -1001,16 +1373,49 @@ export function createPolygonDrawController({
     if (hintEl) hintEl.remove();
   }
 
+  function _refreshSnapCache() {
+    const floor = getCurrentFloor?.();
+    if (!floor) return;
+    cachedFloor = floor;
+    if (assistedMode || edgeSnapMode) {
+      roomEdges = getRoomEdges(floor);
+      roomVertices = getRoomVertices(floor);
+    }
+    if (assistedMode) {
+      const envelope = floor?.layout?.envelope;
+      boundaryTargets = computeStructuralBoundaries(envelope);
+      if (floor.walls?.length > 0) {
+        const roomOuter = computeRoomWallOuterFaces(floor);
+        boundaryTargets.hTargets.push(...roomOuter.hTargets);
+        boundaryTargets.vTargets.push(...roomOuter.vTargets);
+      }
+      console.log(`[poly-draw] snap cache refreshed: ${boundaryTargets.hTargets.length}H + ${boundaryTargets.vTargets.length}V targets, ${roomVertices.length} room vertices`);
+    }
+  }
+
   function completePolygon() {
     if (points.length < MIN_POINTS) return;
 
     const polygonPoints = [...points];
     const callback = onComplete;
 
-    stopDrawing();
-
-    if (callback) {
-      callback(polygonPoints);
+    if (continuous) {
+      // Reset draw state, fire callback (commits new room), then refresh snap cache
+      points = [];
+      snapTargetRoomId = null;
+      currentEdgeSnapPoint = null;
+      currentSnapType = null;
+      isMouseInsideRoom = false;
+      currentMousePoint = null;
+      if (callback) callback(polygonPoints);
+      _refreshSnapCache();
+      updateHint(assistedMode
+        ? "Trace room inner edges • Shift for 15° • Snapping to envelope + rooms"
+        : "Click to place first corner point (Shift for 15° angles)");
+      updatePreview(null);
+    } else {
+      stopDrawing();
+      if (callback) callback(polygonPoints);
     }
   }
 

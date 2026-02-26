@@ -7,6 +7,9 @@ import {
   getRoomEdges,
   findNearestVertex,
   findNearestEdgePoint,
+  findNearestBoundaryPoint,
+  findNearestCornerPoint,
+  computeRoomWallOuterFaces,
   closestPointOnSegment,
   snapToRoomGeometry,
   snapToGrid,
@@ -513,6 +516,51 @@ describe("snapToRoomGeometry", () => {
     expect(VERTEX_SNAP_THRESHOLD_CM).toBe(2);
     expect(EDGE_SNAP_THRESHOLD_CM).toBe(2);
   });
+
+  it("constrains angle to validAngles when provided (orthogonal)", () => {
+    // No room geometry — falls through to grid snap with angle constraint
+    const lastPoint = { x: 100, y: 100 };
+    // Point at ~45° from lastPoint: (110, 110) → should snap to 0° or 90°
+    const result = snapToRoomGeometry(
+      { x: 110, y: 110 }, [], [], lastPoint, false, 2, 2, null,
+      [0, 90, 180, 270]
+    );
+    expect(result.type).toBe("grid");
+    // Snapped to nearest valid angle (0° or 90°), distance preserved
+    // At 45°, equidistant from 0° and 90° — either is valid
+    const dx = result.point.x - lastPoint.x;
+    const dy = result.point.y - lastPoint.y;
+    const angleDeg = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+    // Should be 0° or 90° (within grid-snap rounding)
+    const isValid = Math.abs(angleDeg - 0) < 5 || Math.abs(angleDeg - 90) < 5;
+    expect(isValid).toBe(true);
+  });
+
+  it("constrains angle to validAngles (hex: 60° increments)", () => {
+    const lastPoint = { x: 100, y: 100 };
+    // Point at ~45° → nearest hex angle is 60°
+    const result = snapToRoomGeometry(
+      { x: 120, y: 120 }, [], [], lastPoint, false, 2, 2, null,
+      [0, 60, 120, 180, 240, 300]
+    );
+    expect(result.type).toBe("grid");
+    const dx = result.point.x - lastPoint.x;
+    const dy = result.point.y - lastPoint.y;
+    const angleDeg = ((Math.atan2(dy, dx) * 180 / Math.PI) + 360) % 360;
+    expect(Math.abs(angleDeg - 60)).toBeLessThan(5);
+  });
+
+  it("does not constrain angle when validAngles is null", () => {
+    const lastPoint = { x: 100, y: 100 };
+    // Point at 45° — should grid-snap freely without angle constraint
+    const result = snapToRoomGeometry(
+      { x: 110, y: 110 }, [], [], lastPoint, false, 2, 2, null, null
+    );
+    expect(result.type).toBe("grid");
+    // Both x and y should change (diagonal movement preserved)
+    expect(result.point.x).toBeGreaterThan(lastPoint.x);
+    expect(result.point.y).toBeGreaterThan(lastPoint.y);
+  });
 });
 
 describe("integration: vertex and edge extraction", () => {
@@ -677,5 +725,304 @@ describe('Wall rooms exclusion', () => {
 
     const edges = getRoomEdges(floor);
     expect(edges.length).toBe(8); // 4 edges from each room
+  });
+});
+
+describe("findNearestBoundaryPoint", () => {
+  const hTargets = [
+    { coord: 500, thickness: 30, type: "envelope", rangeMin: 100, rangeMax: 900 },
+  ];
+  const vTargets = [
+    { coord: 200, thickness: 24, type: "spanning", rangeMin: 100, rangeMax: 800 },
+  ];
+
+  it("snaps to H boundary when cursor is near", () => {
+    const result = findNearestBoundaryPoint({ x: 205, y: 498 }, hTargets, vTargets, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.x).toBe(205);
+    expect(result.point.y).toBe(500);
+    expect(result.type).toBe("envelope");
+    expect(result.thickness).toBe(30);
+  });
+
+  it("snaps to V boundary when cursor is near", () => {
+    const result = findNearestBoundaryPoint({ x: 198, y: 300 }, hTargets, vTargets, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.x).toBe(200);
+    expect(result.point.y).toBe(300);
+    expect(result.type).toBe("spanning");
+    expect(result.thickness).toBe(24);
+  });
+
+  it("returns null when cursor is too far from boundaries", () => {
+    const result = findNearestBoundaryPoint({ x: 400, y: 400 }, hTargets, vTargets, 5);
+    expect(result).toBeNull();
+  });
+
+  it("clamps to range endpoint when cursor is outside range", () => {
+    // x=50 is below rangeMin=100 for H target
+    const result = findNearestBoundaryPoint({ x: 50, y: 500 }, hTargets, vTargets, 60);
+    expect(result).not.toBeNull();
+    expect(result.point.x).toBe(100); // clamped to rangeMin
+    expect(result.point.y).toBe(500);
+  });
+
+  it("returns null when cursor is far outside range", () => {
+    // x=950 is past rangeMax=900 for H target, y=500 exactly on coord
+    // distance = hypot(50, 0) = 50, threshold = 5
+    const result = findNearestBoundaryPoint({ x: 950, y: 500 }, hTargets, vTargets, 5);
+    expect(result).toBeNull();
+  });
+
+  it("picks closer boundary when both H and V are within threshold", () => {
+    // Near intersection: x=201, y=499 — V boundary at x=200 is 1cm away, H at y=500 is 1cm away
+    const result = findNearestBoundaryPoint({ x: 201, y: 499 }, hTargets, vTargets, 5);
+    expect(result).not.toBeNull();
+    // Both are ~1cm away, H snap distance = hypot(0, 1) = 1, V snap distance = hypot(1, 0) = 1
+    // Should pick whichever is checked first or has smaller distance
+    expect(result.distance).toBeCloseTo(1, 0);
+  });
+
+  it("returns null for null/invalid inputs", () => {
+    expect(findNearestBoundaryPoint(null, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestBoundaryPoint({ x: NaN, y: 5 }, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestBoundaryPoint({ x: 5, y: 5 }, null, null, 5)).toBeNull();
+  });
+});
+
+describe("findNearestCornerPoint", () => {
+  // H boundary at y=500 spanning x=[100,900], V boundary at x=200 spanning y=[0,800]
+  // Corner exists at (200, 500) — V.coord=200 is within H.rangeMin/Max and H.coord=500 is within V.rangeMin/Max
+  const hTargets = [
+    { coord: 500, thickness: 30, type: "envelope", rangeMin: 100, rangeMax: 900 },
+  ];
+  const vTargets = [
+    { coord: 200, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 800 },
+  ];
+
+  it("snaps to corner when cursor is near H/V intersection", () => {
+    const result = findNearestCornerPoint({ x: 202, y: 498 }, hTargets, vTargets, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.x).toBe(200);
+    expect(result.point.y).toBe(500);
+    expect(result.type).toBe("corner");
+    expect(result.distance).toBeCloseTo(Math.hypot(2, 2), 5);
+  });
+
+  it("returns null when cursor is too far from corner", () => {
+    const result = findNearestCornerPoint({ x: 210, y: 510 }, hTargets, vTargets, 5);
+    expect(result).toBeNull(); // dist = hypot(10,10) ≈ 14.1 > threshold 5
+  });
+
+  it("returns null when corner is outside H boundary range", () => {
+    // V boundary at x=50, outside H.rangeMin=100 — no corner
+    const vOutside = [{ coord: 50, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 800 }];
+    const result = findNearestCornerPoint({ x: 50, y: 500 }, hTargets, vOutside, 5);
+    expect(result).toBeNull();
+  });
+
+  it("returns null when corner is outside V boundary range", () => {
+    // H boundary at y=900, outside V.rangeMax=800 — no corner
+    const hOutside = [{ coord: 900, thickness: 30, type: "envelope", rangeMin: 100, rangeMax: 900 }];
+    const result = findNearestCornerPoint({ x: 200, y: 900 }, hOutside, vTargets, 5);
+    expect(result).toBeNull();
+  });
+
+  it("picks nearest corner when multiple corners exist", () => {
+    const h2 = [
+      { coord: 500, thickness: 30, type: "envelope", rangeMin: 0, rangeMax: 1000 },
+      { coord: 600, thickness: 30, type: "envelope", rangeMin: 0, rangeMax: 1000 },
+    ];
+    const v2 = [{ coord: 200, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 1000 }];
+    // Corners at (200,500) and (200,600). Cursor at (201, 598) is 2.24cm from (200,600) vs 102cm from (200,500).
+    const result = findNearestCornerPoint({ x: 201, y: 598 }, h2, v2, 5);
+    expect(result).not.toBeNull();
+    expect(result.point.y).toBe(600);
+  });
+
+  it("returns null for null/invalid inputs", () => {
+    expect(findNearestCornerPoint(null, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestCornerPoint({ x: NaN, y: 5 }, hTargets, vTargets, 5)).toBeNull();
+    expect(findNearestCornerPoint({ x: 5, y: 5 }, null, vTargets, 5)).toBeNull();
+  });
+});
+
+describe("computeRoomWallOuterFaces", () => {
+  // Room: CW polygon (positive area in screen coords), y=0..100, x=0..200
+  // Bottom H edge goes RIGHT-to-LEFT: (200,100)→(0,100) — standard CW bottom edge direction
+  const room = {
+    id: "r1",
+    polygonVertices: [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 0, y: 100 }],
+    floorPosition: { x: 0, y: 0 }
+  };
+
+  it("computes outer face for H wall below room", () => {
+    // Bottom H wall: start=(200,100), end=(0,100), thickness=30
+    // area2>0 → sign=1, dx=-200,dy=0 → normal={x:0, y:1} → outerY = 100+1*30 = 130
+    const wall = { id: "w1", start: { x: 200, y: 100 }, end: { x: 0, y: 100 },
+      thicknessCm: 30, roomEdge: { roomId: "r1", edgeIndex: 2 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(1);
+    expect(result.hTargets[0].coord).toBeCloseTo(130);
+    expect(result.hTargets[0].type).toBe("room-outer");
+    expect(result.hTargets[0].rangeMin).toBe(0);
+    expect(result.hTargets[0].rangeMax).toBe(200);
+    expect(result.vTargets).toHaveLength(0);
+  });
+
+  it("computes outer face for V wall to the right of room", () => {
+    // Right V wall: start=(200,0), end=(200,100), thickness=24
+    // dx=0, dy=100 → normal={x: sign*100/100, y:0} = {x:1,y:0} → outerX = 200+1*24 = 224
+    const wall = { id: "w2", start: { x: 200, y: 0 }, end: { x: 200, y: 100 },
+      thicknessCm: 24, roomEdge: { roomId: "r1", edgeIndex: 1 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.vTargets).toHaveLength(1);
+    expect(result.vTargets[0].coord).toBeCloseTo(224);
+    expect(result.vTargets[0].type).toBe("room-outer");
+    expect(result.vTargets[0].rangeMin).toBe(0);
+    expect(result.vTargets[0].rangeMax).toBe(100);
+    expect(result.hTargets).toHaveLength(0);
+  });
+
+  it("skips walls with zero thickness", () => {
+    const wall = { id: "w3", start: { x: 200, y: 100 }, end: { x: 0, y: 100 },
+      thicknessCm: 0, roomEdge: { roomId: "r1", edgeIndex: 2 } };
+    const floor = { rooms: [room], walls: [wall] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(0);
+  });
+
+  it("returns empty targets for floor with no walls", () => {
+    const floor = { rooms: [room], walls: [] };
+    const result = computeRoomWallOuterFaces(floor);
+    expect(result.hTargets).toHaveLength(0);
+    expect(result.vTargets).toHaveLength(0);
+  });
+
+  it("returns empty targets for null/missing floor", () => {
+    expect(computeRoomWallOuterFaces(null).hTargets).toHaveLength(0);
+    expect(computeRoomWallOuterFaces({ rooms: [], walls: [] }).hTargets).toHaveLength(0);
+  });
+});
+
+describe("snapToRoomGeometry with boundary targets", () => {
+  const vertices = [
+    { roomId: "room1", vertex: { x: 0, y: 0 } },
+    { roomId: "room1", vertex: { x: 100, y: 0 } },
+    { roomId: "room1", vertex: { x: 100, y: 50 } },
+    { roomId: "room1", vertex: { x: 0, y: 50 } }
+  ];
+  const edges = [
+    { roomId: "room1", edge: { p1: { x: 0, y: 0 }, p2: { x: 100, y: 0 } } },
+    { roomId: "room1", edge: { p1: { x: 100, y: 0 }, p2: { x: 100, y: 50 } } },
+    { roomId: "room1", edge: { p1: { x: 100, y: 50 }, p2: { x: 0, y: 50 } } },
+    { roomId: "room1", edge: { p1: { x: 0, y: 50 }, p2: { x: 0, y: 0 } } }
+  ];
+  const boundaryTargets = {
+    hTargets: [{ coord: 200, thickness: 30, type: "envelope", rangeMin: 0, rangeMax: 500 }],
+    vTargets: [{ coord: 300, thickness: 24, type: "spanning", rangeMin: 0, rangeMax: 500 }],
+  };
+
+  it("prefers vertex over boundary when both within threshold", () => {
+    const result = snapToRoomGeometry({ x: 1, y: 1 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("vertex");
+  });
+
+  it("prefers edge over boundary when both within threshold", () => {
+    const result = snapToRoomGeometry({ x: 50, y: 1 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("edge");
+  });
+
+  it("snaps to corner when near H/V intersection", () => {
+    // (299, 201) is ~1.41cm from corner (300, 200) — within corner threshold (2*1.5=3cm)
+    const result = snapToRoomGeometry({ x: 299, y: 201 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("corner");
+    expect(result.point.x).toBe(300);
+    expect(result.point.y).toBe(200);
+  });
+
+  it("snaps to boundary (not corner) when near single axis boundary only", () => {
+    // (300, 350) is exactly on V boundary x=300, but y=350 is outside H boundary range (0-500 includes it)
+    // The corner is at (300,200): dist = hypot(0,150) = 150 — far outside corner threshold
+    const result = snapToRoomGeometry({ x: 301, y: 350 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("boundary");
+    expect(result.point.x).toBe(300);
+  });
+
+  it("falls back to grid when boundary is also out of range", () => {
+    const result = snapToRoomGeometry({ x: 150, y: 150 }, vertices, edges, null, false, 2, 2, boundaryTargets);
+    expect(result.type).toBe("grid");
+  });
+
+  it("works with no boundary targets (null)", () => {
+    const result = snapToRoomGeometry({ x: 50, y: 25 }, vertices, edges, null, false, 2, 2, null);
+    expect(result.type).toBe("grid");
+  });
+});
+
+describe("assisted mode: first room without edge snap", () => {
+  it("floor with envelope + calibrated + assistedTracing enables assisted mode", () => {
+    // This tests the data conditions — the actual startDrawing depends on DOM
+    const floor = {
+      rooms: [],
+      layout: {
+        assistedTracing: true,
+        envelope: {
+          detectedPolygonCm: [
+            { x: 0, y: 0 }, { x: 1000, y: 0 },
+            { x: 1000, y: 800 }, { x: 0, y: 800 }
+          ],
+          wallThicknesses: { edges: [] },
+          spanningWalls: []
+        },
+        background: { scale: { calibrated: true } }
+      }
+    };
+    const envelope = floor.layout.envelope;
+    const calibrated = floor.layout.background.scale.calibrated;
+    const assistedMode = !!(envelope && calibrated && floor.layout.assistedTracing);
+    expect(assistedMode).toBe(true);
+
+    // edgeSnapMode should be false when assistedMode is true
+    const hasExistingRooms = floor.rooms.length > 0;
+    const edgeSnapMode = hasExistingRooms && !assistedMode;
+    expect(edgeSnapMode).toBe(false);
+  });
+
+  it("floor with envelope + calibrated but assistedTracing off does not enable", () => {
+    const floor = {
+      rooms: [],
+      layout: {
+        assistedTracing: false,
+        envelope: { detectedPolygonCm: [{ x: 0, y: 0 }] },
+        background: { scale: { calibrated: true } }
+      }
+    };
+    const assistedMode = !!(floor.layout?.envelope && floor.layout?.background?.scale?.calibrated && floor.layout?.assistedTracing);
+    expect(assistedMode).toBe(false);
+  });
+
+  it("floor without envelope does not enable assisted mode", () => {
+    const floor = {
+      rooms: [{ id: "r1" }],
+      layout: { assistedTracing: true, background: { scale: { calibrated: true } } }
+    };
+    const assistedMode = !!(floor.layout?.envelope && floor.layout?.background?.scale?.calibrated && floor.layout?.assistedTracing);
+    expect(assistedMode).toBe(false);
+  });
+
+  it("floor with envelope but not calibrated does not enable assisted mode", () => {
+    const floor = {
+      rooms: [],
+      layout: {
+        assistedTracing: true,
+        envelope: { detectedPolygonCm: [{ x: 0, y: 0 }] },
+        background: { scale: { calibrated: false } }
+      }
+    };
+    const assistedMode = !!(floor.layout?.envelope && floor.layout?.background?.scale?.calibrated && floor.layout?.assistedTracing);
+    expect(assistedMode).toBe(false);
   });
 });
