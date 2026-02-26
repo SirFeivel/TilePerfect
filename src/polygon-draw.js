@@ -1148,8 +1148,8 @@ export function createPolygonDrawController({
       const snapCircle = svgEl("circle", {
         cx: currentEdgeSnapPoint.x,
         cy: currentEdgeSnapPoint.y,
-        r: 7, fill: "none",
-        stroke: "#22c55e", "stroke-width": 1.5, opacity: 0.8,
+        r: 7, fill: "#22c55e", "fill-opacity": 0.2,
+        stroke: "#22c55e", "stroke-width": 1.5, "stroke-opacity": 0.8,
         class: "edge-snap-marker"
       });
       previewGroup.appendChild(snapCircle);
@@ -1189,8 +1189,8 @@ export function createPolygonDrawController({
         const snapColor = isCorner ? "#eab308" : isBoundary ? "#f97316" : isSnapped ? "#22c55e" : "#3b82f6";
         previewGroup.appendChild(svgEl("circle", {
           cx: mousePoint.x, cy: mousePoint.y,
-          r: 7, fill: "none",
-          stroke: snapColor, "stroke-width": 1.5, opacity: 0.8
+          r: 7, fill: snapColor, "fill-opacity": 0.2,
+          stroke: snapColor, "stroke-width": 1.5, "stroke-opacity": 0.8
         }));
         if (isCorner) {
           const arm = 11;
@@ -1277,8 +1277,8 @@ export function createPolygonDrawController({
 
       previewGroup.appendChild(svgEl("circle", {
         cx: mousePoint.x, cy: mousePoint.y,
-        r: 7, fill: "none",
-        stroke: snapColor, "stroke-width": 1.5, opacity: 0.8
+        r: 7, fill: snapColor, "fill-opacity": 0.2,
+        stroke: snapColor, "stroke-width": 1.5, "stroke-opacity": 0.8
       }));
 
       // Crosshair lines for corner snaps (both axes locked)
