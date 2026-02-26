@@ -948,7 +948,7 @@ export function subtractOverlappingAreas(newRoom, existingRooms) {
  * @param {number} minSharedLength - Minimum shared edge length to consider connected
  * @returns {Array} Array of groups, each group is array of room IDs
  */
-export function findConnectedRoomGroups(rooms, minSharedLength = 10) {
+export function findConnectedRoomGroups(rooms, minSharedLength = 10, tolerance = WALL_ADJACENCY_TOLERANCE_CM) {
   if (!rooms || rooms.length === 0) return [];
   if (rooms.length === 1) return [[rooms[0].id]];
 
@@ -963,7 +963,7 @@ export function findConnectedRoomGroups(rooms, minSharedLength = 10) {
 
   for (let i = 0; i < rooms.length; i++) {
     for (let j = i + 1; j < rooms.length; j++) {
-      if (areRoomsAdjacent(rooms[i], rooms[j], WALL_ADJACENCY_TOLERANCE_CM, minSharedLength)) {
+      if (areRoomsAdjacent(rooms[i], rooms[j], tolerance, minSharedLength)) {
         adjacencyMap.get(rooms[i].id).push(rooms[j].id);
         adjacencyMap.get(rooms[j].id).push(rooms[i].id);
       }
@@ -1109,7 +1109,18 @@ export function validateFloorConnectivity(floor, minSharedLength = 10) {
     return { valid: true, groups: [[floorRooms[0].id]], message: 'Single room is always valid' };
   }
 
-  const groups = findConnectedRoomGroups(floorRooms, minSharedLength);
+  // Use floor-wide max wall thickness as adjacency tolerance so that rooms
+  // separated by thick outer walls (e.g. 30cm) are still considered connected.
+  let maxThick = WALL_ADJACENCY_TOLERANCE_CM;
+  const wallTypes = floor.layout?.wallDefaults?.types;
+  if (wallTypes) {
+    for (const t of wallTypes) {
+      if ((t.thicknessCm ?? 0) + 1 > maxThick) maxThick = t.thicknessCm + 1;
+    }
+  }
+  const adjacencyTolerance = maxThick;
+
+  const groups = findConnectedRoomGroups(floorRooms, minSharedLength, adjacencyTolerance);
 
   if (groups.length === 1) {
     return {
