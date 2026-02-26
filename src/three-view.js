@@ -62,12 +62,18 @@ function parseHexColor(hex) {
  * hStart/hEnd allow per-edge height interpolation for sloped walls.
  */
 function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd) {
-  if (!surfaceVerts || surfaceVerts.length < 4) return null;
+  if (!surfaceVerts || surfaceVerts.length < 4) {
+    console.log(`[three-view] mapper: NULL (surfaceVerts=${surfaceVerts?.length ?? 0})`);
+    return null;
+  }
   const P0 = surfaceVerts[0];
   const U = { x: surfaceVerts[1].x - P0.x, y: surfaceVerts[1].y - P0.y };
   const V = { x: surfaceVerts[3].x - P0.x, y: surfaceVerts[3].y - P0.y };
   const det = U.x * V.y - U.y * V.x;
-  if (Math.abs(det) < 0.001) return null;
+  if (Math.abs(det) < 0.001) {
+    console.log(`[three-view] mapper: NULL (degenerate, det=${det.toFixed(6)})`);
+    return null;
+  }
   const invDet = 1 / det;
   return function (sx, sy) {
     const dx = sx - P0.x, dy = sy - P0.y;
@@ -183,6 +189,7 @@ function buildWallGeo(iax, iaz, ibx, ibz, oax, oaz, obx, obz, hA, hB, edgeLen, d
     geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
     geo.setIndex(indices);
     geo.computeVertexNormals();
+    console.log(`[three-view] wallGeo: simple box, 8 verts, 12 tris, h=${hA}/${hB}, len=${edgeLen?.toFixed(1)}`);
     return geo;
   }
 
@@ -331,6 +338,7 @@ function buildWallGeo(iax, iaz, ibx, ibz, oax, oaz, obx, obz, hA, hB, edgeLen, d
   geo.setAttribute("position", new THREE.Float32BufferAttribute(verts, 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
+  console.log(`[three-view] wallGeo: doorway-holes, ${verts.length / 3} verts, ${idx.length / 3} tris, ${doorways.length} doorways, h=${hA}/${hB}, len=${edgeLen?.toFixed(1)}`);
   return geo;
 }
 
@@ -621,6 +629,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     hoveredMesh = null;
 
     const { rooms, walls, showWalls, selectedRoomId, selectedSurfaceEdgeIndex } = floorData;
+    console.log(`[three-view] buildScene: ${rooms.length} rooms, ${(walls || []).length} walls (cleared ${toRemove.length} objects, showWalls=${showWalls !== false})`);
 
     for (const roomDesc of rooms) {
       const isSel = roomDesc.id === selectedRoomId;
@@ -668,6 +677,8 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     if (!verts || verts.length < 3) return;
 
     const pos = roomDesc.floorPosition || { x: 0, y: 0 };
+    console.log(`[three-view] room ${roomDesc.id}: poly=${verts.length}v @ (${pos.x},${pos.y}), tiles=${roomDesc.floorTiles?.length || 0}, excl=${(roomDesc.floorExclusions || []).length}, patches=${(roomDesc.doorwayFloorPatches || []).length}, selected=${isSelected}`);
+    console.log(`[three-view] room ${roomDesc.id} vertices: ${verts.map(v => `(${v.x.toFixed(1)},${v.y.toFixed(1)})`).join(' ')}`);
     const wallH = DEFAULT_WALL_HEIGHT_CM; // default, per-edge heights from wallData
 
     // --- Floor mesh ---
@@ -746,6 +757,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     const isEdgeSelected = isOwnerSelected && wallDesc.roomEdge?.edgeIndex === selectedSurfaceEdgeIndex;
     const wallColor = isOwnerSelected ? WALL_COLOR : UNSELECTED_WALL_COLOR;
     const edgeColor = isOwnerSelected ? EDGE_COLOR : UNSELECTED_EDGE_COLOR;
+    console.log(`[three-view] wall ${wallDesc.id}: inner=(${wallDesc.start.x.toFixed(1)},${wallDesc.start.y.toFixed(1)})→(${wallDesc.end.x.toFixed(1)},${wallDesc.end.y.toFixed(1)}) outer=(${wallDesc.outerStart.x.toFixed(1)},${wallDesc.outerStart.y.toFixed(1)})→(${wallDesc.outerEnd.x.toFixed(1)},${wallDesc.outerEnd.y.toFixed(1)}) h=${wallDesc.hStart}/${wallDesc.hEnd} len=${wallDesc.edgeLength?.toFixed(1)} doorways=${wallDesc.doorways?.length || 0} surfaces=${wallDesc.surfaces?.length || 0}`);
 
     const geo = buildWallGeo(
       wallDesc.start.x, wallDesc.start.y,
@@ -781,18 +793,22 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     // endCornerFill: same-room reflex vertex gap (triangle) or cross-room end gap (quad).
     // startCornerFill: cross-room start gap (quad).
     if (wallDesc.endCornerFill) {
+      console.log(`[three-view]   endCornerFill: ${wallDesc.endCornerFill.p4 ? 'quad' : 'tri'} h=${wallDesc.endCornerFill.h}`);
       renderCornerFill(wallDesc.endCornerFill, scene, baseColor, linesMat);
     }
     if (wallDesc.startCornerFill) {
+      console.log(`[three-view]   startCornerFill: ${wallDesc.startCornerFill.p4 ? 'quad' : 'tri'} h=${wallDesc.startCornerFill.h}`);
       renderCornerFill(wallDesc.startCornerFill, scene, baseColor, linesMat);
     }
 
     // Render tiles for each surface
-    for (const surf of wallDesc.surfaces) {
+    for (let surfIdx = 0; surfIdx < wallDesc.surfaces.length; surfIdx++) {
+      const surf = wallDesc.surfaces[surfIdx];
       if (!surf.tiles?.length && !surf.exclusions?.length) continue;
 
       // Owner surface maps to inner face, guest surface maps to outer face
       const isOwner = surf.roomId === wallDesc.roomEdge?.roomId;
+      console.log(`[three-view]   surface[${surfIdx}] room=${surf.roomId} owner=${isOwner} fracs=${(surf.fromFrac ?? 0).toFixed(2)}-${(surf.toFrac ?? 1).toFixed(2)} tiles=${surf.tiles?.length || 0} excl=${surf.exclusions?.length || 0} skirting=${surf.skirtingSegments?.length || 0}`);
       const faceStart = isOwner ? wallDesc.start : wallDesc.outerStart;
       const faceEnd = isOwner ? wallDesc.end : wallDesc.outerEnd;
 
@@ -814,7 +830,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         surfEnd.x, surfEnd.y,
         surf.hStart, surf.hEnd
       );
-      if (!mapper) continue;
+      if (!mapper) { console.log(`[three-view]   surface[${surfIdx}] mapper=NULL → skip`); continue; }
 
       const { meshes, lines } = renderSurface3D({
         tiles: surf.tiles,
@@ -826,6 +842,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       });
       for (const m of meshes) scene.add(m);
       for (const l of lines) scene.add(l);
+      console.log(`[three-view]   surface[${surfIdx}] mapper=OK → ${meshes.length} tile meshes, ${lines.length} line sets`);
 
       // Render actual skirting segments in 3D
       if (surf.skirtingOffset > 0 && surf.skirtingSegments && surf.skirtingSegments.length > 0) {

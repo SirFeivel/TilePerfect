@@ -457,7 +457,7 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     groutColor = effectiveSettings.grout?.colorHex || "#ffffff";
   }
 
-  return {
+  const desc = {
     id: room.id,
     polygonVertices: room.polygonVertices,
     floorPosition: room.floorPosition || { x: 0, y: 0 },
@@ -466,6 +466,11 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     groutColor,
     doorwayFloorPatches,
   };
+  const pos3d = desc.floorPosition;
+  const verts3d = desc.polygonVertices || [];
+  console.log(`[three-view:pipeline] room ${desc.id}: poly=${verts3d.length}v @ (${pos3d.x},${pos3d.y}), tiles=${desc.floorTiles.length}, excl=${desc.floorExclusions.length}, patches=${desc.doorwayFloorPatches.length}`);
+  if (verts3d.length > 0) console.log(`[three-view:pipeline] room ${desc.id} vertices: ${verts3d.map(v => `(${v.x.toFixed(1)},${v.y.toFixed(1)})`).join(' ')}`);
+  return desc;
 }
 
 function prepareFloorWallData(state, floor, wallGeometry) {
@@ -482,10 +487,15 @@ function prepareFloorWallData(state, floor, wallGeometry) {
     const dx = wall.end.x - wall.start.x;
     const dy = wall.end.y - wall.start.y;
     const edgeLength = Math.hypot(dx, dy);
-    if (edgeLength < 1) return null;
-
+    if (edgeLength < 1) {
+      console.log(`[three-view:pipeline] wall ${wall.id} DROPPED: edgeLength=${edgeLength.toFixed(2)} < 1`);
+      return null;
+    }
     const wallDesc = wg.get(wall.id);
-    if (!wallDesc) return null;
+    if (!wallDesc) {
+      console.log(`[three-view:pipeline] wall ${wall.id} DROPPED: no wallDesc in wallGeometry`);
+      return null;
+    }
 
     const surfaces = wall.surfaces.map((surface, idx) => {
       // Get room for this surface to pass context for skirting offset
@@ -539,7 +549,7 @@ function prepareFloorWallData(state, floor, wallGeometry) {
       };
     }).filter(Boolean);
 
-    return {
+    const assembled = {
       id: wall.id,
       start: wallDesc.extStartPt,
       end: wallDesc.extEndPt,
@@ -554,6 +564,9 @@ function prepareFloorWallData(state, floor, wallGeometry) {
       endCornerFill: wallDesc.endCornerFill ?? null,
       surfaces,
     };
+    const s = assembled.start, e = assembled.end, os = assembled.outerStart, oe = assembled.outerEnd;
+    console.log(`[three-view:pipeline] wall ${assembled.id}: inner=(${s.x.toFixed(1)},${s.y.toFixed(1)})→(${e.x.toFixed(1)},${e.y.toFixed(1)}) outer=(${os.x.toFixed(1)},${os.y.toFixed(1)})→(${oe.x.toFixed(1)},${oe.y.toFixed(1)}) thick=${thick} h=${hStart}/${hEnd} len=${assembled.edgeLength?.toFixed(1)} doorways=${assembled.doorways?.length || 0} surfaces=${assembled.surfaces.length}${assembled.endCornerFill ? ` endFill=${assembled.endCornerFill.p4 ? 'quad' : 'tri'}` : ''}`);
+    return assembled;
   }).filter(Boolean);
 }
 
