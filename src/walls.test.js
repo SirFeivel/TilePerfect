@@ -1254,6 +1254,88 @@ describe('computeFloorWallGeometry', () => {
       expect(wg.get(w.id).endCornerFill).toBeFalsy();
     }
   });
+
+  // ── Cross-room corner fill ───────────────────────────────────────────
+  // Two walls from different rooms meet at a building corner but are not
+  // linked via shared-edge mechanics. The third pass must detect the outer
+  // face gap and add a quad fill (with p4 = outer corner).
+  it('adds cross-room corner fill (p4 quad) for perpendicular walls from different rooms', () => {
+    // SE building corner: H bottom outer wall (r1 edge 2, 30cm) meets
+    // V right outer wall (r2 edge 1, 30cm).
+    //
+    // r1: (0,0)→(200,100), CW winding → sign=+1
+    //   Edge 2: (200,100)→(0,100), dirX=-1, normal=(0,+1) (DOWN = outward from building)
+    //   With thickPrev=12 (no edge-1 wall): extStart=12
+    //   → extStartPt=(212,100), outerStartPt=(212,130)
+    //   outerStartPt extends rightward (+x direction from start)
+    //
+    // r2: (170,0)→(200,100), CW winding → sign=+1
+    //   Edge 1: (200,0)→(200,100), dirX=0, dirY=+1, normal=(+1,0) (RIGHT = outward)
+    //   With thickNext=12 (no edge-2 wall): extEnd=12
+    //   → extEndPt=(200,112), outerEndPt=(230,112)
+    //   outerEndPt extends downward (+y direction from end)
+    //
+    // lineIntersect((212,130),(+1,0), (230,112),(0,+1)): t=18, s=18 → corner=(230,130)
+    const r1 = {
+      id: 'r1', name: 'r1', floorPosition: { x: 0, y: 0 }, widthCm: 200, heightCm: 100,
+      polygonVertices: [{ x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 0, y: 100 }],
+      tile: { widthCm: 60, heightCm: 60, shape: 'rect' },
+      grout: { widthCm: 0.2, colorHex: '#cccccc' },
+      pattern: { type: 'grid', bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0, origin: { preset: 'tl', xCm: 0, yCm: 0 } },
+      exclusions: [],
+    };
+    const r2 = {
+      id: 'r2', name: 'r2', floorPosition: { x: 0, y: 0 }, widthCm: 200, heightCm: 100,
+      // CW polygon (170,0)→(200,0)→(200,100)→(170,100): area2 > 0, sign=+1
+      // Edge 1: (200,0)→(200,100), going DOWN (+y), normal=(+1,0) RIGHT (outward)
+      polygonVertices: [{ x: 170, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 100 }, { x: 170, y: 100 }],
+      tile: { widthCm: 60, heightCm: 60, shape: 'rect' },
+      grout: { widthCm: 0.2, colorHex: '#cccccc' },
+      pattern: { type: 'grid', bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0, origin: { preset: 'tl', xCm: 0, yCm: 0 } },
+      exclusions: [],
+    };
+
+    const wH = {
+      id: 'w-h',
+      start: { x: 200, y: 100 }, end: { x: 0, y: 100 },
+      thicknessCm: 30,
+      roomEdge: { roomId: 'r1', edgeIndex: 2 },
+      surfaces: [{ roomId: 'r1', edgeIndex: 2, side: 'inner', fromFrac: 0, toFrac: 1, tiles: [], exclusions: [] }],
+      doorways: [], heightStartCm: 240, heightEndCm: 240,
+    };
+    const wV = {
+      id: 'w-v',
+      start: { x: 200, y: 0 }, end: { x: 200, y: 100 },
+      thicknessCm: 30,
+      roomEdge: { roomId: 'r2', edgeIndex: 1 },
+      surfaces: [{ roomId: 'r2', edgeIndex: 1, side: 'inner', fromFrac: 0, toFrac: 1, tiles: [], exclusions: [] }],
+      doorways: [], heightStartCm: 240, heightEndCm: 240,
+    };
+
+    const floor = { id: 'f1', name: 'F', rooms: [r1, r2], walls: [wH, wV] };
+    const wg = computeFloorWallGeometry(floor);
+
+    const dH = wg.get('w-h');
+    const dV = wg.get('w-v');
+    expect(dH).toBeDefined();
+    expect(dV).toBeDefined();
+
+    // Third pass assigns fill to exactly one wall (eA in the first matching pair)
+    const hFill = dH.startCornerFill || dH.endCornerFill;
+    const vFill = dV.startCornerFill || dV.endCornerFill;
+    const fill = hFill || vFill;
+    expect(fill).toBeDefined();
+
+    // Must be a quad fill (p4 = outer corner present)
+    expect(fill.p4).toBeDefined();
+
+    // Outer corner = intersection of outer face lines = (230, 130)
+    expect(fill.p4.x).toBeCloseTo(230, 0);
+    expect(fill.p4.y).toBeCloseTo(130, 0);
+
+    // Inner corner = p1 + p2 - p4 (parallelogram law)
+    expect(fill.p3).toBeDefined();
+  });
 });
 
 // ── getDoorwaysInEdgeSpace ───────────────────────────────────────────

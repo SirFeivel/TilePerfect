@@ -1631,6 +1631,72 @@ export function computeFloorWallGeometry(floor) {
     }
   }
 
+  // Third pass: detect cross-room outer corner gaps and add quad fill prisms.
+  // When two walls from different wall-IDs have outer faces that don't yet meet at a corner,
+  // extend each outer face line until they intersect and fill the gap with a prism.
+  {
+    const CORNER_MAX_GAP_CM = 50; // max extension distance to consider a valid corner
+
+    // Intersect two lines (p1+t*d1, p2+s*d2); return corner point if both
+    // t and s are in (0.1, CORNER_MAX_GAP_CM] (gap exists and isn't huge).
+    const outerLineIntersect = (p1, d1, p2, d2) => {
+      const cross = d1.x * d2.y - d1.y * d2.x;
+      if (Math.abs(cross) < 0.001) return null; // parallel walls
+      const dx = p2.x - p1.x, dy = p2.y - p1.y;
+      const t = (dx * d2.y - dy * d2.x) / cross;
+      const s = (dx * d1.y - dy * d1.x) / cross;
+      if (t <= 0.1 || s <= 0.1) return null; // already meeting or wrong direction
+      if (t > CORNER_MAX_GAP_CM || s > CORNER_MAX_GAP_CM) return null; // gap too large
+      return { x: p1.x + t * d1.x, y: p1.y + t * d1.y };
+    };
+
+    // Each outer endpoint: { wallId, desc, isEnd, outerPt, dir, h }
+    // "isEnd=true"  → outer face extends forward (+dir) past outerEndPt
+    // "isEnd=false" → outer face extends backward (-dir) past outerStartPt
+    const eps = [];
+    for (const [wallId, desc] of result) {
+      const h = desc.wall.heightEndCm ?? DEFAULT_WALL_HEIGHT_CM;
+      eps.push({ wallId, desc, isEnd: true,
+        outerPt: desc.outerEndPt, dir: { x: desc.dirX, y: desc.dirY }, h });
+      eps.push({ wallId, desc, isEnd: false,
+        outerPt: desc.outerStartPt, dir: { x: -desc.dirX, y: -desc.dirY }, h });
+    }
+
+    for (let i = 0; i < eps.length; i++) {
+      for (let j = i + 1; j < eps.length; j++) {
+        const eA = eps[i], eB = eps[j];
+        if (eA.wallId === eB.wallId) continue;
+
+        const pCorner = outerLineIntersect(eA.outerPt, eA.dir, eB.outerPt, eB.dir);
+        if (!pCorner) continue;
+
+        // Quad fill: p1=eA outer endpoint, p2=eB outer endpoint,
+        // p4=outer corner, p3=inner corner (parallelogram: p1+p2-p4)
+        const fill = {
+          p1: eA.outerPt,
+          p2: eB.outerPt,
+          p3: { x: eA.outerPt.x + eB.outerPt.x - pCorner.x,
+                y: eA.outerPt.y + eB.outerPt.y - pCorner.y },
+          p4: pCorner,
+          h: Math.max(eA.h, eB.h),
+        };
+
+        // Assign to eA only (avoid duplicating the fill on both walls)
+        if (eA.isEnd) {
+          if (!eA.desc.endCornerFill) {
+            eA.desc.endCornerFill = fill;
+            console.log(`[walls] cross-room corner fill: end of ${eA.wallId.slice(0, 8)} + ${eB.isEnd ? 'end' : 'start'} of ${eB.wallId.slice(0, 8)}, corner=(${pCorner.x.toFixed(1)},${pCorner.y.toFixed(1)})`);
+          }
+        } else {
+          if (!eA.desc.startCornerFill) {
+            eA.desc.startCornerFill = fill;
+            console.log(`[walls] cross-room corner fill: start of ${eA.wallId.slice(0, 8)} + ${eB.isEnd ? 'end' : 'start'} of ${eB.wallId.slice(0, 8)}, corner=(${pCorner.x.toFixed(1)},${pCorner.y.toFixed(1)})`);
+          }
+        }
+      }
+    }
+  }
+
   return result;
 }
 
