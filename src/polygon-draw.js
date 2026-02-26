@@ -1007,10 +1007,13 @@ export function createPolygonDrawController({
    * intermediate edge), the snap releases and returns null.
    * Skipped when cursor is very close to lastPoint (direction is undefined).
    */
-  function _dualConstraintSnap(svgPoint, lastPoint, P0, validAngles) {
-    const DUAL_SNAP_CM = 80;
-    const ESCAPE_ANGLE_DEG = 20;
-    const MIN_MOVE_CM = 3; // below this distance, skip direction check
+  /**
+   * Find the best closing corner candidate: the intersection of a valid incoming
+   * edge from lastPoint and a valid closing edge from P0, nearest to the cursor.
+   * Returns a grid-snapped point or null. No cursor forcing — for display only.
+   */
+  function _findBestClosingQ(svgPoint, lastPoint, P0, validAngles) {
+    const MAX_DIST_CM = 80;
     let bestQ = null;
     let bestDist = Infinity;
 
@@ -1021,23 +1024,11 @@ export function createPolygonDrawController({
         const Q = findLineIntersection(lastPoint, inRad, P0, closeRad);
         if (!Q || !Number.isFinite(Q.x) || !Number.isFinite(Q.y)) continue;
         const dist = Math.hypot(Q.x - svgPoint.x, Q.y - svgPoint.y);
-        if (dist < DUAL_SNAP_CM && dist < bestDist) { bestDist = dist; bestQ = Q; }
+        if (dist < MAX_DIST_CM && dist < bestDist) { bestDist = dist; bestQ = Q; }
       }
     }
 
-    if (!bestQ) return null;
-
-    // Direction escape: release snap if cursor is heading away from Q
-    const moveDist = Math.hypot(svgPoint.x - lastPoint.x, svgPoint.y - lastPoint.y);
-    if (moveDist >= MIN_MOVE_CM) {
-      const dirToCursor = Math.atan2(svgPoint.y - lastPoint.y, svgPoint.x - lastPoint.x);
-      const dirToQ = Math.atan2(bestQ.y - lastPoint.y, bestQ.x - lastPoint.x);
-      let diff = Math.abs(dirToCursor - dirToQ) * 180 / Math.PI;
-      if (diff > 180) diff = 360 - diff;
-      if (diff > ESCAPE_ANGLE_DEG) return null;
-    }
-
-    return { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) };
+    return bestQ ? { x: snapToGrid(bestQ.x), y: snapToGrid(bestQ.y) } : null;
   }
 
   function handleRightClick(e) {
@@ -1245,6 +1236,25 @@ export function createPolygonDrawController({
         stroke: "none"
       });
       previewGroup.insertBefore(fillPath, previewGroup.firstChild);
+    }
+
+    // Ghost closing-corner indicator: show where the polygon can close with valid
+    // angles on both the incoming and closing edge. Visual guide only — no cursor forcing.
+    if (points.length >= MIN_POINTS && mousePoint && assistedAngles?.length > 0) {
+      const lastPt = points[points.length - 1];
+      const ghostQ = _findBestClosingQ(mousePoint, lastPt, points[0], assistedAngles);
+      if (ghostQ) {
+        previewGroup.appendChild(svgEl("circle", {
+          cx: ghostQ.x, cy: ghostQ.y,
+          r: 7, fill: "#22c55e", "fill-opacity": 0.1,
+          stroke: "#22c55e", "stroke-width": 1, "stroke-dasharray": "3,2", "stroke-opacity": 0.5
+        }));
+        const arm = 5;
+        previewGroup.appendChild(svgEl("path", {
+          d: `M ${ghostQ.x - arm} ${ghostQ.y} L ${ghostQ.x + arm} ${ghostQ.y} M ${ghostQ.x} ${ghostQ.y - arm} L ${ghostQ.x} ${ghostQ.y + arm}`,
+          stroke: "#22c55e", "stroke-width": 1, "stroke-opacity": 0.5, fill: "none"
+        }));
+      }
     }
 
     // Draw vertex circles
