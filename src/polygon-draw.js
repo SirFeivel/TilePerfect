@@ -1126,6 +1126,40 @@ export function createPolygonDrawController({
     }
   }
 
+  // Append a dimension label for an edge (p1→p2) to group.
+  // Label sits at the midpoint, offset 8cm perpendicular to the edge, rotated to match the edge.
+  function _addEdgeLengthLabel(group, p1, p2) {
+    const dx = p2.x - p1.x, dy = p2.y - p1.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 0.5) return;
+    const mx = (p1.x + p2.x) / 2;
+    const my = (p1.y + p2.y) / 2;
+    const nx = -dy / len, ny = dx / len;
+    const offset = 8;
+    const x = mx + nx * offset;
+    const y = my + ny * offset;
+    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angle > 90) angle -= 180;
+    else if (angle < -90) angle += 180;
+    const text = `${Number(len.toFixed(1))} cm`;
+    const g = svgEl("g");
+    if (angle) g.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
+    const t = svgEl("text", {
+      x, y,
+      fill: "rgba(231,238,252,0.95)",
+      stroke: "rgba(20,20,20,0.75)",
+      "stroke-width": 3,
+      "paint-order": "stroke fill",
+      "font-size": 9,
+      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      "text-anchor": "middle",
+      "dominant-baseline": "middle"
+    });
+    t.textContent = text;
+    g.appendChild(t);
+    group.appendChild(g);
+  }
+
   function updatePreview(mousePoint = null) {
     if (!isDrawing) return;
 
@@ -1164,6 +1198,7 @@ export function createPolygonDrawController({
           "stroke-dasharray": "5,5"
         });
         previewGroup.appendChild(linePath);
+        _addEdgeLengthLabel(previewGroup, points[0], currentEdgeSnapPoint);
 
         // Draw first point
         const firstCircle = svgEl("circle", {
@@ -1228,6 +1263,17 @@ export function createPolygonDrawController({
         "stroke-dasharray": "5,5"
       });
       previewGroup.appendChild(linePath);
+    }
+
+    // Edge length labels: committed edges, live edge, and closing-edge preview
+    for (let i = 0; i < points.length - 1; i++) {
+      _addEdgeLengthLabel(previewGroup, points[i], points[i + 1]);
+    }
+    if (mousePoint && points.length >= 1) {
+      _addEdgeLengthLabel(previewGroup, points[points.length - 1], mousePoint);
+    }
+    if (points.length >= MIN_POINTS && mousePoint) {
+      _addEdgeLengthLabel(previewGroup, mousePoint, points[0]);
     }
 
     // Draw filled polygon preview if closing
