@@ -17,6 +17,15 @@ const UNSELECTED_WALL_COLOR = 0x4a5568;
 const UNSELECTED_EDGE_COLOR = 0x6b7280;
 const EXCLUSION_COLOR = 0xef4444; // red for exclusion zones
 
+// --- Surface layering offsets (cm) ---
+// Physical offset from base surface to avoid z-fighting.
+// Layers ordered: base mesh < grout < tiles < skirting / exclusions.
+const SURFACE_GROUT_OFFSET     = 0.3; // wall grout quad → outward from wall mesh
+const SURFACE_TILE_OFFSET      = 0.5; // floor Y, obj3d top Y, obj3d side normal
+const SURFACE_TILE_OFFSET_WALL = 0.6; // wall tiles → outward (in front of grout, behind skirting)
+const SURFACE_SKIRTING_OFFSET  = 0.9; // wall skirting → outward
+const SURFACE_EXCL_OFFSET      = 1.0; // floor exclusion Y
+
 // --- Tile path parsing helpers ---
 
 /** Parse "M x y L x y ... Z M x y ..." into array of rings [{x,y}...] */
@@ -86,6 +95,39 @@ function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd) {
       z: az + t * (bz - az),
     };
   };
+}
+
+/** Wrap a mapper so every output point is pushed along (nx, nz) by `offset` cm. */
+function createOffsetMapper(mapper, nx, nz, offset) {
+  return (x, y) => {
+    const p = mapper(x, y);
+    return { x: p.x + nx * offset, y: p.y, z: p.z + nz * offset };
+  };
+}
+
+/**
+ * Create a grout background quad for a wall surface.
+ * Walls need an explicit grout quad because one wall mesh has two surfaces
+ * (inner/outer) and only one may be tiled.
+ */
+function createGroutQuad(surfaceVerts, mapper, nx, nz, groutColorHex) {
+  if (!surfaceVerts || surfaceVerts.length < 4) {
+    console.warn(`[three-view] createGroutQuad: dropped (verts=${surfaceVerts?.length})`);
+    return null;
+  }
+  const groutMapper = createOffsetMapper(mapper, nx, nz, SURFACE_GROUT_OFFSET);
+  const corners = surfaceVerts.map(v => groutMapper(v.x, v.y));
+  const positions = new Float32Array(corners.flatMap(c => [c.x, c.y, c.z]));
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshLambertMaterial({
+    color: parseHexColor(groutColorHex),
+    side: THREE.DoubleSide,
+  });
+  console.log(`[three-view] createGroutQuad: color=${groutColorHex}`);
+  return new THREE.Mesh(geo, mat);
 }
 
 /**
@@ -403,6 +445,70 @@ function createFloorMapper(pos) {
 }
 
 /**
+ * Create a mapper for a box face that maps 2D surface coords (sx, sy) to 3D world coords.
+ * sx: 0..faceWidth along the face's horizontal axis
+ * sy: 0..faceHeight along the face's vertical axis (0 = bottom/near, faceHeight = top/far)
+ * For side faces: sx = along face width, sy = up from floor (0=floor, h=top)
+ * For top face: sx = along width, sy = along depth
+ */
+function createBoxFaceMapper(obj, roomPos, face) {
+  const h = obj.heightCm || 100;
+
+  // Get vertices and bounding box for any object type
+  let verts;
+  if (obj.type === "tri") {
+    verts = [obj.p1, obj.p2, obj.p3];
+  } else if (obj.type === "freeform" && obj.vertices?.length >= 3) {
+    verts = obj.vertices;
+  } else {
+    // rect
+    verts = [
+      { x: obj.x, y: obj.y },
+      { x: obj.x + obj.w, y: obj.y },
+      { x: obj.x + obj.w, y: obj.y + obj.h },
+      { x: obj.x, y: obj.y + obj.h },
+    ];
+  }
+
+  const xs = verts.map(v => v.x), ys = verts.map(v => v.y);
+  const minX = Math.min(...xs), minY = Math.min(...ys);
+  const ox = roomPos.x + minX;
+  const oz = roomPos.y + minY;
+  const w = Math.max(...xs) - minX;
+  const d = Math.max(...ys) - minY;
+
+  // Handle side-N faces for tri/freeform
+  const sideMatch = face.match(/^side-(\d+)$/);
+  if (sideMatch) {
+    const idx = parseInt(sideMatch[1]);
+    const a = verts[idx], b = verts[(idx + 1) % verts.length];
+    if (!a || !b) return null;
+    const ax = roomPos.x + a.x, az = roomPos.y + a.y;
+    const bx = roomPos.x + b.x, bz = roomPos.y + b.y;
+    const edgeLen = Math.sqrt((bx - ax) ** 2 + (bz - az) ** 2);
+    if (edgeLen < 0.01) return null;
+    const dx = (bx - ax) / edgeLen, dz = (bz - az) / edgeLen;
+    // sx = along edge, sy = up
+    return (sx, sy) => ({ x: ax + dx * sx, y: sy, z: az + dz * sx });
+  }
+
+  switch (face) {
+    case "front":
+      return (sx, sy) => ({ x: ox + sx, y: sy, z: oz });
+    case "back":
+      return (sx, sy) => ({ x: ox + w - sx, y: sy, z: oz + d });
+    case "left":
+      return (sx, sy) => ({ x: ox, y: sy, z: oz + sx });
+    case "right":
+      return (sx, sy) => ({ x: ox + w, y: sy, z: oz + d - sx });
+    case "top":
+      return (sx, sy) => ({ x: ox + sx, y: h, z: oz + sy });
+    default:
+      return null;
+  }
+}
+
+/**
  * Renders tiles + exclusions for any surface (floor or wall).
  * @param {Object} opts
  * @param {Array}  opts.tiles       - Tile objects with { d, isFull, excluded }
@@ -496,8 +602,19 @@ function renderSurface3D(opts) {
 
   // --- Exclusions ---
   if (exclusions && exclusions.length > 0) {
+    const OBJ3D_FLOOR_COLOR = 0x22c55e;
     const exclMat = new THREE.MeshBasicMaterial({
       color: EXCLUSION_COLOR,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      polygonOffset: exclZBias !== 0,
+      polygonOffsetFactor: exclZBias !== 0 ? exclZBias : 0,
+      polygonOffsetUnits: exclZBias !== 0 ? exclZBias : 0,
+    });
+    const obj3dMat = new THREE.MeshBasicMaterial({
+      color: OBJ3D_FLOOR_COLOR,
       transparent: true,
       opacity: 0.15,
       side: THREE.DoubleSide,
@@ -511,14 +628,20 @@ function renderSurface3D(opts) {
       transparent: true,
       opacity: 0.8,
     });
+    const obj3dLineMat = new THREE.LineBasicMaterial({
+      color: OBJ3D_FLOOR_COLOR,
+      transparent: true,
+      opacity: 0.8,
+    });
 
     for (const ex of exclusions) {
       const shape = exclusionToShape(ex);
       if (!shape) continue;
+      const isObj3d = ex._isObject3d;
 
       const geo = new THREE.ShapeGeometry(shape);
       transformShapeGeo(geo, mapper);
-      const mesh = new THREE.Mesh(geo, exclMat);
+      const mesh = new THREE.Mesh(geo, isObj3d ? obj3dMat : exclMat);
       mesh.userData = { type: "exclusion" };
       meshes.push(mesh);
 
@@ -531,7 +654,7 @@ function renderSurface3D(opts) {
       }
       linePoints.push(linePoints[0].clone());
       const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
-      const line = new THREE.Line(lineGeo, exclLineMat);
+      const line = new THREE.Line(lineGeo, isObj3d ? obj3dLineMat : exclLineMat);
       line.userData = { type: "exclusionEdge" };
       lines.push(line);
     }
@@ -545,9 +668,9 @@ function renderSurface3D(opts) {
  * @param {{ canvas: HTMLCanvasElement, onWallDoubleClick: Function, onHoverChange: Function, onRoomSelect: Function }} opts
  */
 // Export pure helper functions for unit testing
-export { parseTilePathD, parseHexColor, createWallMapper, createFloorMapper, exclusionToShape, buildWallGeo };
+export { parseTilePathD, parseHexColor, createWallMapper, createFloorMapper, createBoxFaceMapper, createOffsetMapper, createGroutQuad, exclusionToShape, buildWallGeo };
 
-export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDoubleClick, onHoverChange, onRoomSelect, onSurfaceSelect }) {
+export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDoubleClick, onHoverChange, onRoomSelect, onSurfaceSelect, onObjectSelect, onObjectDoubleClick }) {
   let renderer, camera, controls, scene;
   let animFrameId = null;
   let active = false;
@@ -558,6 +681,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
   const pointer = new THREE.Vector2();
   let wallMeshes = [];
   let floorMeshes = [];
+  let object3dMeshes = [];
   let hoveredMesh = null;
 
   // Camera stability: only auto-frame when room set changes
@@ -630,6 +754,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     }
     wallMeshes = [];
     floorMeshes = [];
+    object3dMeshes = [];
     hoveredMesh = null;
 
     const { rooms, walls, showWalls, selectedRoomId, selectedSurfaceEdgeIndex } = floorData;
@@ -702,18 +827,13 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     const floorColor = hasTiles
       ? groutColor
       : (isSelected ? FLOOR_COLOR : UNSELECTED_FLOOR_COLOR);
-    const floorOpacity = hasTiles
-      ? 1.0
-      : (isSelected ? FLOOR_OPACITY : UNSELECTED_FLOOR_OPACITY);
 
-    const floorMat = new THREE.MeshBasicMaterial({
+    const floorMat = new THREE.MeshLambertMaterial({
       color: floorColor,
-      transparent: true,
-      opacity: floorOpacity,
       side: THREE.DoubleSide,
     });
     const floorMesh = new THREE.Mesh(floorGeo, floorMat);
-    floorMesh.userData = { type: "floor", roomId: roomDesc.id, baseColor: floorMat.color.getHex(), baseOpacity: floorOpacity };
+    floorMesh.userData = { type: "floor", roomId: roomDesc.id, baseColor: floorMat.color.getHex(), baseOpacity: 1.0 };
     scene.add(floorMesh);
     floorMeshes.push(floorMesh);
 
@@ -731,6 +851,10 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     }
 
     // --- Floor tiles + exclusions via renderSurface3D ---
+    // Y offsets to layer above the opaque floor (in cm, invisible at room scale)
+    const TILE_Y = SURFACE_TILE_OFFSET;
+    const EXCL_Y = SURFACE_EXCL_OFFSET;
+
     if (hasTiles) {
       const floorMapper = createFloorMapper(pos);
       const { meshes, lines } = renderSurface3D({
@@ -739,8 +863,13 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         groutColor: roomDesc.groutColor,
         mapper: floorMapper,
       });
-      for (const m of meshes) scene.add(m);
-      for (const l of lines) scene.add(l);
+
+
+      for (const m of meshes) {
+        m.position.y = m.userData.type === "exclusion" ? EXCL_Y : TILE_Y;
+        scene.add(m);
+      }
+      for (const l of lines) { l.position.y = TILE_Y; scene.add(l); }
     } else if ((roomDesc.floorExclusions || []).length > 0) {
       const floorMapper = createFloorMapper(pos);
       const { meshes, lines } = renderSurface3D({
@@ -749,10 +878,240 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         groutColor: roomDesc.groutColor || "#ffffff",
         mapper: floorMapper,
       });
-      for (const m of meshes) scene.add(m);
-      for (const l of lines) scene.add(l);
+      for (const m of meshes) { m.position.y = EXCL_Y; scene.add(m); }
+      for (const l of lines) { l.position.y = EXCL_Y; scene.add(l); }
     }
 
+    // --- 3D Objects (extruded boxes) ---
+    for (const obj of (roomDesc.objects3d || [])) {
+      addObject3DToScene(obj, pos, roomDesc.id);
+    }
+
+  }
+
+  // --- Add a single 3D object (extruded box) to the scene ---
+  // Get 2D vertices for any object type (in room-local coords)
+  function getObj3dVertices2D(obj) {
+    if (obj.type === 'tri') {
+      return [obj.p1, obj.p2, obj.p3];
+    } else if (obj.type === 'freeform' && obj.vertices?.length >= 3) {
+      return obj.vertices;
+    } else {
+      // rect
+      return [
+        { x: obj.x, y: obj.y },
+        { x: obj.x + obj.w, y: obj.y },
+        { x: obj.x + obj.w, y: obj.y + obj.h },
+        { x: obj.x, y: obj.y + obj.h },
+      ];
+    }
+  }
+
+  function addObject3DToScene(obj, roomPos, roomId) {
+    const OBJ3D_COLOR = 0x22c55e;
+    const OBJ3D_OPACITY = 0.9;
+    const OBJ3D_EDGE_COLOR = 0x16a34a;
+
+    const verts2d = getObj3dVertices2D(obj);
+    const n = verts2d.length;
+    const h = obj.heightCm || 100;
+
+    // Convert 2D room-local vertices to 3D world coords (x=floorX, y=up, z=floorY)
+    const worldVerts = verts2d.map(v => ({
+      x: roomPos.x + v.x,
+      z: roomPos.y + v.y,
+    }));
+
+    const faceTiles = obj.faceTiles || {};
+
+    // --- Side faces (one quad per edge) ---
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = worldVerts[i];
+      const b = worldVerts[j];
+
+      // Determine face name based on object type
+      let faceName;
+      if (obj.type === 'rect') {
+        faceName = ['front', 'right', 'back', 'left'][i];
+      } else {
+        faceName = `side-${i}`;
+      }
+
+      const positions = new Float32Array([
+        a.x, 0, a.z,
+        b.x, 0, b.z,
+        b.x, h, b.z,
+        a.x, h, a.z,
+      ]);
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geo.setIndex([0, 1, 2, 0, 2, 3]);
+      geo.computeVertexNormals();
+
+      const faceHasTiles = faceTiles[faceName]?.tiles?.length > 0;
+      const faceColor = faceHasTiles ? parseHexColor(faceTiles[faceName].groutColor || "#ffffff") : OBJ3D_COLOR;
+      const faceOpacity = faceHasTiles ? 1.0 : OBJ3D_OPACITY;
+
+      const mat = new THREE.MeshLambertMaterial({
+        color: faceColor,
+        transparent: faceOpacity < 1,
+        opacity: faceOpacity,
+        side: THREE.DoubleSide,
+      });
+
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.userData = {
+        type: "object3d",
+        objectId: obj.id,
+        face: faceName,
+        roomId,
+        baseColor: faceColor instanceof THREE.Color ? faceColor.getHex() : (typeof faceColor === 'number' ? faceColor : OBJ3D_COLOR),
+        baseOpacity: faceOpacity,
+      };
+      scene.add(mesh);
+      object3dMeshes.push(mesh);
+    }
+
+    // --- Top face ---
+    {
+      // Build top face using THREE.ShapeGeometry for arbitrary polygons
+      const shape = new THREE.Shape();
+      shape.moveTo(worldVerts[0].x, worldVerts[0].z);
+      for (let i = 1; i < n; i++) {
+        shape.lineTo(worldVerts[i].x, worldVerts[i].z);
+      }
+      shape.closePath();
+
+      const shapeGeo = new THREE.ShapeGeometry(shape);
+      // ShapeGeometry produces vertices in (x, y) → remap to (x, h, z)
+      const posArr = shapeGeo.attributes.position.array;
+      for (let i = 0; i < posArr.length; i += 3) {
+        const sx = posArr[i];
+        const sy = posArr[i + 1];
+        posArr[i] = sx;       // x stays
+        posArr[i + 1] = h;    // y = height
+        posArr[i + 2] = sy;   // z = old y
+      }
+      shapeGeo.attributes.position.needsUpdate = true;
+      shapeGeo.computeVertexNormals();
+
+      const topHasTiles = faceTiles["top"]?.tiles?.length > 0;
+      const topColor = topHasTiles ? parseHexColor(faceTiles["top"].groutColor || "#ffffff") : OBJ3D_COLOR;
+      const topOpacity = topHasTiles ? 1.0 : OBJ3D_OPACITY;
+
+      const topMat = new THREE.MeshLambertMaterial({
+        color: topColor,
+        transparent: topOpacity < 1,
+        opacity: topOpacity,
+        side: THREE.DoubleSide,
+      });
+
+      const topMesh = new THREE.Mesh(shapeGeo, topMat);
+      topMesh.userData = {
+        type: "object3d",
+        objectId: obj.id,
+        face: "top",
+        roomId,
+        baseColor: topColor instanceof THREE.Color ? topColor.getHex() : (typeof topColor === 'number' ? topColor : OBJ3D_COLOR),
+        baseOpacity: topOpacity,
+      };
+      scene.add(topMesh);
+      object3dMeshes.push(topMesh);
+    }
+
+    // Compute polygon centroid for outward normal computation on side faces
+    const cx = worldVerts.reduce((s, v) => s + v.x, 0) / n;
+    const cz = worldVerts.reduce((s, v) => s + v.z, 0) / n;
+
+    // Render tiles on faces that have tiling configured
+    for (const [face, tileData] of Object.entries(faceTiles)) {
+      if (!tileData.tiles?.length) continue;
+      let mapper = createBoxFaceMapper(obj, roomPos, face);
+      if (!mapper) {
+        console.warn(`[three-view] OBJ3D TILING: obj=${obj.id} face=${face} mapper=NULL → SKIP`);
+        continue;
+      }
+
+      // Offset tiles outward from face to avoid z-fighting (physical offset, same approach as walls/floor)
+      if (face === "top") {
+        // Top face: offset upward in Y, like floor's TILE_Y
+        const baseMapper = mapper;
+        mapper = (sx, sy) => {
+          const p = baseMapper(sx, sy);
+          return { x: p.x, y: p.y + SURFACE_TILE_OFFSET, z: p.z };
+        };
+      } else {
+        // Side faces: offset outward along face normal (perpendicular to edge, away from centroid)
+        const sideMatch = face.match(/^side-(\d+)$/);
+        let nx = 0, nz = 0;
+        if (sideMatch) {
+          const idx = parseInt(sideMatch[1]);
+          const a = worldVerts[idx], b = worldVerts[(idx + 1) % n];
+          // Edge direction
+          const edx = b.x - a.x, edz = b.z - a.z;
+          const edLen = Math.sqrt(edx * edx + edz * edz);
+          if (edLen > 0.001) {
+            // Perpendicular (two options: rotate ±90°)
+            let pnx = -edz / edLen, pnz = edx / edLen;
+            // Pick the one pointing away from centroid
+            const midX = (a.x + b.x) / 2, midZ = (a.z + b.z) / 2;
+            if (pnx * (midX - cx) + pnz * (midZ - cz) < 0) { pnx = -pnx; pnz = -pnz; }
+            nx = pnx; nz = pnz;
+          }
+        } else if (face === "front" || face === "back" || face === "left" || face === "right") {
+          // Rect side faces: known normals
+          if (face === "front") nz = -1;
+          else if (face === "back") nz = 1;
+          else if (face === "left") nx = -1;
+          else if (face === "right") nx = 1;
+        }
+        mapper = createOffsetMapper(mapper, nx, nz, SURFACE_TILE_OFFSET);
+      }
+
+      const { meshes: tileMeshes, lines: tileLines } = renderSurface3D({
+        tiles: tileData.tiles,
+        exclusions: [],
+        groutColor: tileData.groutColor || "#ffffff",
+        mapper,
+      });
+      for (const m of tileMeshes) scene.add(m);
+      for (const l of tileLines) scene.add(l);
+    }
+
+    // --- Edge lines ---
+    const edgeLineVerts = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = worldVerts[i];
+      const b = worldVerts[j];
+      // Bottom edge
+      edgeLineVerts.push(a.x, 0, a.z, b.x, 0, b.z);
+      // Top edge
+      edgeLineVerts.push(a.x, h, a.z, b.x, h, b.z);
+      // Vertical edge
+      edgeLineVerts.push(a.x, 0, a.z, a.x, h, a.z);
+    }
+
+    const edgeGeo = new THREE.BufferGeometry();
+    edgeGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(edgeLineVerts), 3));
+    const edgeMat = new THREE.LineBasicMaterial({ color: OBJ3D_EDGE_COLOR });
+    scene.add(new THREE.LineSegments(edgeGeo, edgeMat));
+
+    const bounds = getObj3dBoundsForLog(worldVerts);
+    console.log(`[three-view] object3d ${obj.id} (${obj.type}): verts=${n}, h=${h}, bounds=(${bounds}), faces=${n + 1}`);
+  }
+
+  function getObj3dBoundsForLog(worldVerts) {
+    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+    for (const v of worldVerts) {
+      if (v.x < minX) minX = v.x;
+      if (v.z < minZ) minZ = v.z;
+      if (v.x > maxX) maxX = v.x;
+      if (v.z > maxZ) maxZ = v.z;
+    }
+    return `${minX.toFixed(1)},${minZ.toFixed(1)}→${maxX.toFixed(1)},${maxZ.toFixed(1)}`;
   }
 
   // --- Add a single wall entity to the scene ---
@@ -812,7 +1171,6 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
 
       // Owner surface maps to inner face, guest surface maps to outer face
       const isOwner = surf.roomId === wallDesc.roomEdge?.roomId;
-      console.log(`[three-view]   surface[${surfIdx}] room=${surf.roomId} owner=${isOwner} fracs=${(surf.fromFrac ?? 0).toFixed(2)}-${(surf.toFrac ?? 1).toFixed(2)} tiles=${surf.tiles?.length || 0} excl=${surf.exclusions?.length || 0} skirting=${surf.skirtingSegments?.length || 0}`);
       const faceStart = isOwner ? wallDesc.start : wallDesc.outerStart;
       const faceEnd = isOwner ? wallDesc.end : wallDesc.outerEnd;
 
@@ -836,21 +1194,38 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       );
       if (!mapper) { console.log(`[three-view]   surface[${surfIdx}] mapper=NULL → skip`); continue; }
 
+      // Compute face normal pointing away from wall surface (for physical offset layering)
+      const oppStart = isOwner ? wallDesc.outerStart : wallDesc.start;
+      const oppEnd = isOwner ? wallDesc.outerEnd : wallDesc.end;
+      const nmx = (surfStart.x + surfEnd.x) / 2 - (oppStart.x + oppEnd.x) / 2;
+      const nmz = (surfStart.y + surfEnd.y) / 2 - (oppStart.y + oppEnd.y) / 2;
+      const nmLen = Math.sqrt(nmx * nmx + nmz * nmz);
+      const nx = nmLen > 0.001 ? nmx / nmLen : 0;
+      const nz = nmLen > 0.001 ? nmz / nmLen : 0;
+      console.log(`[three-view]   surface[${surfIdx}] normal: nx=${nx.toFixed(3)}, nz=${nz.toFixed(3)}`);
+
+      // Grout background quad — covers this surface, hides wall color behind tiles
+      if (surf.tiles?.length) {
+        const groutMesh = createGroutQuad(surf.surfaceVerts, mapper, nx, nz, surf.groutColor || "#ffffff");
+        if (groutMesh) scene.add(groutMesh);
+      }
+
+      const tileMapper = createOffsetMapper(mapper, nx, nz, SURFACE_TILE_OFFSET_WALL);
       const { meshes, lines } = renderSurface3D({
         tiles: surf.tiles,
         exclusions: surf.exclusions,
         groutColor: surf.groutColor || "#ffffff",
-        mapper,
-        tileZBias: -1,
-        exclZBias: -2,
+        mapper: tileMapper,
+        tileZBias: 0,
+        exclZBias: 0,
       });
       for (const m of meshes) scene.add(m);
       for (const l of lines) scene.add(l);
-      console.log(`[three-view]   surface[${surfIdx}] mapper=OK → ${meshes.length} tile meshes, ${lines.length} line sets`);
 
       // Render actual skirting segments in 3D
       if (surf.skirtingOffset > 0 && surf.skirtingSegments && surf.skirtingSegments.length > 0) {
         const skirtingHeight = surf.skirtingHeight || 6;
+        const skirtMapper = createOffsetMapper(mapper, nx, nz, SURFACE_SKIRTING_OFFSET);
 
         for (const segment of surf.skirtingSegments) {
           const { x1, x2, excluded } = segment;
@@ -863,13 +1238,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
             { x: x1, y: surf.surfaceVerts[0].y - skirtingHeight },  // top-left
           ];
 
-          // Map to 3D and apply z-bias to avoid z-fighting with wall
-          const seg3D = segVerts.map(v => {
-            const p = mapper(v.x, v.y);
-            // Apply z-bias by offsetting in the direction of the wall normal
-            // For wall surfaces, we need to push outward slightly
-            return p;
-          });
+          const seg3D = segVerts.map(v => skirtMapper(v.x, v.y));
 
           const segGeo = new THREE.BufferGeometry();
           const positions = new Float32Array(seg3D.flatMap(p => [p.x, p.y, p.z]));
@@ -886,10 +1255,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
             transparent: true,
             side: THREE.DoubleSide,
             depthTest: true,
-            depthWrite: false, // Don't write to depth buffer to avoid blocking tiles
-            polygonOffset: true,
-            polygonOffsetFactor: -2, // Pull forward
-            polygonOffsetUnits: -2,
+            depthWrite: false,
           });
 
           const segMesh = new THREE.Mesh(segGeo, segMat);
@@ -944,7 +1310,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
   // --- Reset camera ---
   function resetCamera() {
     if (!scene) return;
-    const allMeshes = [...wallMeshes, ...floorMeshes];
+    const allMeshes = [...wallMeshes, ...floorMeshes, ...object3dMeshes];
     if (allMeshes.length === 0) return;
     const box = new THREE.Box3();
     for (const m of allMeshes) box.expandByObject(m);
@@ -971,14 +1337,19 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
 
     raycaster.setFromCamera(pointer, camera);
 
-    // Check walls first, then floors
+    // Check walls first, then 3D objects, then floors
     let hit = null;
     const wallHits = raycaster.intersectObjects(wallMeshes, false);
     if (wallHits.length > 0) {
       hit = wallHits[0].object;
     } else {
-      const floorHits = raycaster.intersectObjects(floorMeshes, false);
-      if (floorHits.length > 0) hit = floorHits[0].object;
+      const objHits = raycaster.intersectObjects(object3dMeshes, false);
+      if (objHits.length > 0) {
+        hit = objHits[0].object;
+      } else {
+        const floorHits = raycaster.intersectObjects(floorMeshes, false);
+        if (floorHits.length > 0) hit = floorHits[0].object;
+      }
     }
 
     if (hit !== hoveredMesh) {
@@ -991,8 +1362,11 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       if (hoveredMesh) {
         hoveredMesh.material.color.setHex(WALL_HOVER_COLOR);
         if (hoveredMesh.userData.type === "floor") hoveredMesh.material.opacity = SURFACE_HIGHLIGHT_OPACITY;
-        const isFloor = hoveredMesh.userData.type === "floor";
-        const label = isFloor ? "Floor" : `Wall ${hoveredMesh.userData.edgeIndex + 1}`;
+        if (hoveredMesh.userData.type === "object3d") hoveredMesh.material.opacity = 1.0;
+        const ud = hoveredMesh.userData;
+        const label = ud.type === "floor" ? "Floor"
+          : ud.type === "object3d" ? `Object (${ud.face})`
+          : `Wall ${ud.edgeIndex + 1}`;
         onHoverChange?.({ label });
       } else {
         onHoverChange?.(null);
@@ -1015,6 +1389,18 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       const mesh = wallHits[0].object;
       onWallDoubleClick?.({
         edgeIndex: mesh.userData.edgeIndex,
+        roomId: mesh.userData.roomId,
+      });
+      return;
+    }
+
+    // Then check 3D objects (surface editor)
+    const objHits = raycaster.intersectObjects(object3dMeshes, false);
+    if (objHits.length > 0) {
+      const mesh = objHits[0].object;
+      onObjectDoubleClick?.({
+        objectId: mesh.userData.objectId,
+        face: mesh.userData.face,
         roomId: mesh.userData.roomId,
       });
       return;
@@ -1048,7 +1434,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
 
     raycaster.setFromCamera(pointer, camera);
 
-    // Check walls first (surface select), then floors
+    // Check walls first (surface select), then 3D objects, then floors
     const wallHits = raycaster.intersectObjects(wallMeshes, false);
     if (wallHits.length > 0) {
       const mesh = wallHits[0].object;
@@ -1057,6 +1443,16 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         if (onSurfaceSelect) onSurfaceSelect({ roomId, edgeIndex: mesh.userData.edgeIndex });
         else onRoomSelect?.({ roomId });
       }
+      return;
+    }
+    const objHits = raycaster.intersectObjects(object3dMeshes, false);
+    if (objHits.length > 0) {
+      const mesh = objHits[0].object;
+      onObjectSelect?.({
+        objectId: mesh.userData.objectId,
+        face: mesh.userData.face,
+        roomId: mesh.userData.roomId,
+      });
       return;
     }
     const floorHits = raycaster.intersectObjects(floorMeshes, false);

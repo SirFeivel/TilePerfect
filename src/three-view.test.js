@@ -1,6 +1,6 @@
 // src/three-view.test.js
 import { describe, it, expect } from "vitest";
-import { parseTilePathD, parseHexColor, createWallMapper, createFloorMapper, exclusionToShape } from "./three-view.js";
+import { parseTilePathD, parseHexColor, createWallMapper, createFloorMapper, createBoxFaceMapper, createOffsetMapper, createGroutQuad, exclusionToShape } from "./three-view.js";
 
 describe("parseTilePathD", () => {
   it("parses a simple M/L/Z path into one ring", () => {
@@ -211,5 +211,221 @@ describe("exclusionToShape", () => {
   it("returns null for unknown type", () => {
     const shape = exclusionToShape({ type: "unknown" });
     expect(shape).toBeNull();
+  });
+});
+
+describe("createOffsetMapper", () => {
+  it("offsets output along (nx, nz) by the given amount", () => {
+    const base = (x, y) => ({ x, y: y, z: 0 });
+    const offset = createOffsetMapper(base, 1, 0, 5);
+    const p = offset(10, 20);
+    expect(p.x).toBeCloseTo(15);  // 10 + 1*5
+    expect(p.y).toBeCloseTo(20);  // unchanged
+    expect(p.z).toBeCloseTo(0);   // 0 + 0*5
+  });
+
+  it("offsets in both x and z when normal is diagonal", () => {
+    const base = (x, y) => ({ x, y, z: 0 });
+    const nx = Math.SQRT1_2, nz = Math.SQRT1_2;
+    const offset = createOffsetMapper(base, nx, nz, 10);
+    const p = offset(0, 0);
+    expect(p.x).toBeCloseTo(10 * Math.SQRT1_2);
+    expect(p.z).toBeCloseTo(10 * Math.SQRT1_2);
+  });
+
+  it("zero offset returns same point as base mapper", () => {
+    const base = (x, y) => ({ x: x + 100, y: y + 50, z: x - y });
+    const offset = createOffsetMapper(base, 1, 1, 0);
+    const p = offset(7, 3);
+    expect(p).toEqual(base(7, 3));
+  });
+
+  it("preserves y from the base mapper (only offsets xz)", () => {
+    const base = (x, y) => ({ x: 0, y: 999, z: 0 });
+    const offset = createOffsetMapper(base, 0, 1, 50);
+    const p = offset(0, 0);
+    expect(p.y).toBe(999);
+    expect(p.z).toBeCloseTo(50);
+  });
+});
+
+describe("createBoxFaceMapper", () => {
+  const rectObj = { type: "rect", x: 10, y: 20, w: 100, h: 80, heightCm: 200 };
+  const roomPos = { x: 0, y: 0 };
+
+  it("maps front face: sx along width, sy up", () => {
+    const m = createBoxFaceMapper(rectObj, roomPos, "front");
+    expect(m).not.toBeNull();
+    // Front face at z = roomPos.y + obj.y = 20
+    const bl = m(0, 0);    // bottom-left of front
+    expect(bl.x).toBeCloseTo(10);  // ox = roomPos.x + obj.x
+    expect(bl.y).toBeCloseTo(0);
+    expect(bl.z).toBeCloseTo(20);  // oz = roomPos.y + obj.y
+    const br = m(100, 0);  // bottom-right of front
+    expect(br.x).toBeCloseTo(110);
+    expect(br.z).toBeCloseTo(20);
+    const tl = m(0, 200);  // top-left
+    expect(tl.y).toBeCloseTo(200);
+  });
+
+  it("maps back face: sx reversed along width", () => {
+    const m = createBoxFaceMapper(rectObj, roomPos, "back");
+    expect(m).not.toBeNull();
+    const bl = m(0, 0);
+    expect(bl.x).toBeCloseTo(110); // ox + w - 0
+    expect(bl.z).toBeCloseTo(100); // oz + d = 20 + 80
+  });
+
+  it("maps top face at object height", () => {
+    const m = createBoxFaceMapper(rectObj, roomPos, "top");
+    expect(m).not.toBeNull();
+    const p = m(50, 40);
+    expect(p.x).toBeCloseTo(60);   // ox + sx
+    expect(p.y).toBeCloseTo(200);  // heightCm
+    expect(p.z).toBeCloseTo(60);   // oz + sy
+  });
+
+  it("returns null for unknown face name", () => {
+    expect(createBoxFaceMapper(rectObj, roomPos, "bogus")).toBeNull();
+  });
+
+  describe("tri object side faces", () => {
+    const triObj = {
+      type: "tri",
+      p1: { x: 0, y: 0 },
+      p2: { x: 100, y: 0 },
+      p3: { x: 50, y: 80 },
+      heightCm: 150,
+    };
+
+    it("maps side-0 along edge p1→p2", () => {
+      const m = createBoxFaceMapper(triObj, roomPos, "side-0");
+      expect(m).not.toBeNull();
+      // Edge from p1(0,0) to p2(100,0), length=100, horizontal
+      const start = m(0, 0);
+      expect(start.x).toBeCloseTo(0);   // p1.x
+      expect(start.y).toBeCloseTo(0);
+      expect(start.z).toBeCloseTo(0);   // p1.y
+      const end = m(100, 0);
+      expect(end.x).toBeCloseTo(100);   // p2.x
+      expect(end.z).toBeCloseTo(0);
+      const top = m(0, 150);
+      expect(top.y).toBeCloseTo(150);   // sy = height
+    });
+
+    it("maps side-1 along edge p2→p3", () => {
+      const m = createBoxFaceMapper(triObj, roomPos, "side-1");
+      expect(m).not.toBeNull();
+      const start = m(0, 0);
+      expect(start.x).toBeCloseTo(100); // p2.x
+      expect(start.z).toBeCloseTo(0);   // p2.y
+      const edgeLen = Math.sqrt(50 * 50 + 80 * 80);
+      const end = m(edgeLen, 0);
+      expect(end.x).toBeCloseTo(50);    // p3.x
+      expect(end.z).toBeCloseTo(80);    // p3.y
+    });
+
+    it("returns null for out-of-range side index", () => {
+      // tri has 3 vertices, so side-3 is valid (wraps to p3→p0) but side-4 should fail
+      // Actually side-3 has index 3, verts[3] is undefined for a triangle
+      expect(createBoxFaceMapper(triObj, roomPos, "side-5")).toBeNull();
+    });
+  });
+
+  describe("freeform object", () => {
+    const freeObj = {
+      type: "freeform",
+      vertices: [
+        { x: 0, y: 0 },
+        { x: 200, y: 0 },
+        { x: 200, y: 100 },
+        { x: 100, y: 150 },
+        { x: 0, y: 100 },
+      ],
+      heightCm: 120,
+    };
+
+    it("maps top face using bounding box origin", () => {
+      const m = createBoxFaceMapper(freeObj, roomPos, "top");
+      expect(m).not.toBeNull();
+      const p = m(0, 0);
+      expect(p.x).toBeCloseTo(0);    // minX of vertices
+      expect(p.y).toBeCloseTo(120);  // heightCm
+      expect(p.z).toBeCloseTo(0);    // minY of vertices
+    });
+
+    it("maps side-2 along edge v2→v3", () => {
+      const m = createBoxFaceMapper(freeObj, roomPos, "side-2");
+      expect(m).not.toBeNull();
+      const start = m(0, 0);
+      expect(start.x).toBeCloseTo(200); // v2.x
+      expect(start.z).toBeCloseTo(100); // v2.y
+    });
+  });
+});
+
+describe("createGroutQuad", () => {
+  it("returns a Mesh with correct geometry for a simple wall face", () => {
+    // 4 corners of a 100cm wide × 250cm tall surface
+    const surfVerts = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 250 },
+      { x: 0, y: 250 },
+    ];
+    // Wall along X axis at z=50
+    const mapper = (sx, sy) => ({ x: sx, y: sy, z: 50 });
+    // Normal pointing outward (toward -z)
+    const nx = 0, nz = -1;
+    const mesh = createGroutQuad(surfVerts, mapper, nx, nz, "#cccccc");
+
+    expect(mesh).not.toBeNull();
+    expect(mesh.geometry).toBeDefined();
+    expect(mesh.material).toBeDefined();
+
+    // Should have 4 vertices (12 floats)
+    const pos = mesh.geometry.attributes.position.array;
+    expect(pos.length).toBe(12);
+
+    // Vertices should be offset from z=50 by SURFACE_GROUT_OFFSET (0.3) in -z direction
+    // So z should be 50 + (-1 * 0.3) = 49.7
+    for (let i = 2; i < pos.length; i += 3) {
+      expect(pos[i]).toBeCloseTo(49.7, 1);
+    }
+
+    // Material should be the parsed grout color (#cccccc)
+    // THREE.Color stores in linear color space, so compare via getHexString
+    expect(mesh.material.color.getHexString()).toBe("cccccc");
+  });
+
+  it("returns null for fewer than 4 surface vertices", () => {
+    const surfVerts = [{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 }];
+    const mapper = (sx, sy) => ({ x: sx, y: sy, z: 0 });
+    expect(createGroutQuad(surfVerts, mapper, 0, 1, "#fff")).toBeNull();
+  });
+
+  it("returns null for null surface vertices", () => {
+    const mapper = (sx, sy) => ({ x: sx, y: sy, z: 0 });
+    expect(createGroutQuad(null, mapper, 0, 1, "#fff")).toBeNull();
+  });
+
+  it("grout quad offset is in the normal direction, not arbitrary", () => {
+    const surfVerts = [
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+      { x: 50, y: 100 },
+      { x: 0, y: 100 },
+    ];
+    // Diagonal normal: (0.6, 0, 0.8) normalized
+    const mapper = (sx, sy) => ({ x: sx + 200, y: sy, z: 300 });
+    const nx = 0.6, nz = 0.8;
+    const mesh = createGroutQuad(surfVerts, mapper, nx, nz, "#ffffff");
+    expect(mesh).not.toBeNull();
+
+    const pos = mesh.geometry.attributes.position.array;
+    // First vertex: mapper(0,0) = (200, 0, 300), offset by (0.6*0.3, 0, 0.8*0.3) = (0.18, 0, 0.24)
+    expect(pos[0]).toBeCloseTo(200.18, 1);  // x
+    expect(pos[1]).toBeCloseTo(0, 1);       // y unchanged
+    expect(pos[2]).toBeCloseTo(300.24, 1);  // z
   });
 });

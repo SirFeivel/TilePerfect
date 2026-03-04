@@ -495,19 +495,54 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     for (const surf of (obj.surfaces || [])) {
       if (!surf.tile) continue;
 
-      // Face dimensions
-      const isTop = surf.face === "top";
-      const faceW = isTop ? obj.w : (surf.face === "left" || surf.face === "right" ? obj.h : obj.w);
-      const faceH = isTop ? obj.h : (obj.heightCm || 100);
+      // Compute face dimensions from object geometry
+      let faceW, faceH;
+      if (obj.type === "rect") {
+        const isTop = surf.face === "top";
+        faceW = isTop ? obj.w : (surf.face === "left" || surf.face === "right" ? obj.h : obj.w);
+        faceH = isTop ? obj.h : (obj.heightCm || 100);
+      } else {
+        // tri / freeform: compute from vertices
+        const verts = obj.type === "tri" ? [obj.p1, obj.p2, obj.p3] : (obj.vertices || []);
+        if (surf.face === "top") {
+          // Top face: bounding box of the polygon
+          const xs = verts.map(v => v.x), ys = verts.map(v => v.y);
+          faceW = Math.max(...xs) - Math.min(...xs);
+          faceH = Math.max(...ys) - Math.min(...ys);
+        } else {
+          // Side face: edge length × object height
+          const match = surf.face.match(/^side-(\d+)$/);
+          if (match) {
+            const idx = parseInt(match[1]);
+            const a = verts[idx], b = verts[(idx + 1) % verts.length];
+            if (a && b) {
+              faceW = Math.sqrt((b.x - a.x) ** 2 + (b.y - a.y) ** 2);
+            }
+          }
+          faceH = obj.heightCm || 100;
+        }
+      }
+
+      if (!faceW || !faceH) continue;
 
       // Create a virtual room-like region for this face
+      // For tri/freeform top faces, use the actual polygon shape (origin-shifted) so tiles clip correctly
+      let polyVerts;
+      if (surf.face === "top" && obj.type !== "rect") {
+        const verts = obj.type === "tri" ? [obj.p1, obj.p2, obj.p3] : (obj.vertices || []);
+        const xs = verts.map(v => v.x), ys = verts.map(v => v.y);
+        const minX = Math.min(...xs), minY = Math.min(...ys);
+        polyVerts = verts.map(v => ({ x: v.x - minX, y: v.y - minY }));
+      } else {
+        polyVerts = [
+          { x: 0, y: 0 }, { x: faceW, y: 0 },
+          { x: faceW, y: faceH }, { x: 0, y: faceH },
+        ];
+      }
       const region = {
         widthCm: faceW,
         heightCm: faceH,
-        polygonVertices: [
-          { x: 0, y: 0 }, { x: faceW, y: 0 },
-          { x: faceW, y: faceH }, { x: 0, y: faceH },
-        ],
+        polygonVertices: polyVerts,
         tile: surf.tile,
         grout: surf.grout || { widthCm: 0.2, colorHex: "#ffffff" },
         pattern: surf.pattern || { type: "grid", bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0 },
@@ -522,6 +557,7 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
           tiles: result?.tiles || [],
           groutColor: region.grout.colorHex || "#ffffff",
         };
+
       }
     }
     return { ...obj, faceTiles };
