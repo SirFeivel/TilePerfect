@@ -661,6 +661,27 @@ export function exclusionToPolygon(ex) {
   return null;
 }
 
+export function exclusionToRegion(excl) {
+  const mp = exclusionToPolygon(excl);
+  if (!mp) return null;
+  const ring = mp[0][0];
+  const verts = ring.slice(0, -1).map(([x, y]) => ({ x, y }));
+  const xs = verts.map(v => v.x), ys = verts.map(v => v.y);
+  const widthCm = Math.max(...xs) - Math.min(...xs);
+  const heightCm = Math.max(...ys) - Math.min(...ys);
+  console.log(`[geometry:exclusionToRegion] id=${excl.id} shape=${excl.type} verts=${verts.length} w=${widthCm.toFixed(1)} h=${heightCm.toFixed(1)}`);
+  return {
+    id: excl.id,
+    widthCm,
+    heightCm,
+    polygonVertices: verts,
+    tile: excl.tile,
+    grout: excl.grout || { widthCm: 0.2, colorHex: '#ffffff' },
+    pattern: excl.pattern || { type: 'grid', bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0 },
+    exclusions: [],
+  };
+}
+
 export function computeExclusionsUnion(exclusions) {
   if (!exclusions?.length) return { mp: null, error: null };
 

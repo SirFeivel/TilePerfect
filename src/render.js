@@ -22,7 +22,7 @@ import {
 import { EPSILON, DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM } from "./constants.js";
 import { setBaseViewBox, calculateEffectiveViewBox, getViewport } from "./viewport.js";
 import { getFloorBounds } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches, computeSurfaceTiles } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
 import { computePatternGroupOrigin, getEffectiveTileSettings, getRoomPatternGroup, isPatternGroupChild } from "./pattern-groups.js";
 
 function isCircleRoom(room) {
@@ -1426,9 +1426,10 @@ export function renderPlanSvg({
   // When a wall surface is selected, currentRoom is the wall surface region whose
   // exclusions are doorway shapes in surface-space — not floor exclusions. Use the
   // actual room's exclusions for the floor plan display.
-  const floorRoom = roomOverride ? getCurrentRoom(state) : currentRoom;
-  const exclusions = floorRoom?.exclusions || [];
-  const displayExclusions = includeExclusions ? exclusions : [];
+  const displayExclRaw = roomOverride
+    ? (currentRoom.exclusions || []).filter(e => e.id && !e._isContact)
+    : (currentRoom?.exclusions || []);
+  const displayExclusions = includeExclusions ? displayExclRaw : [];
 
   if (!svgOverride) {
     const resizeOverlay = document.getElementById("resizeMetrics");
@@ -1688,6 +1689,26 @@ export function renderPlanSvg({
         if (tile.id) attrs["data-tileid"] = tile.id;
         g.appendChild(svgEl("path", attrs));
       }
+    }
+
+    // Sub-surface tile groups (exclusions that carry their own tile/pattern)
+    const subExcls = roomOverride ? (currentRoom.exclusions || []) : getAllFloorExclusions(currentRoom);
+    const subSurfResults = computeSubSurfaceTiles(state, subExcls, currentFloor, { isRemovalMode });
+    for (const ss of subSurfResults) {
+      if (!ss.tiles.length) continue;
+      const ssGroutRgb = hexToRgb(ss.groutColor);
+      const ssG = svgEl("g", { opacity: 1, "pointer-events": "none" });
+      for (const tile of ss.tiles) {
+        if (!tile.d) continue;
+        ssG.appendChild(svgEl("path", {
+          d: tile.d,
+          fill: tile.isFull ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
+          stroke: `rgba(${ssGroutRgb.r},${ssGroutRgb.g},${ssGroutRgb.b},0.50)`,
+          "stroke-width": tile.isFull ? 0.5 : 1.2,
+        }));
+      }
+      svg.appendChild(ssG);
+      console.log(`[render:2D-subSurface] excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
     }
   }
 
@@ -2092,6 +2113,27 @@ function _renderFloorRoom(svg, room, floor, opts) {
           }
 
           roomGroup.appendChild(tilesGroup);
+        }
+
+        // Sub-surface tile groups in floor overview
+        const ovSubSurfs = computeSubSurfaceTiles(
+          { ...state, selectedRoomId: room.id }, room.exclusions || [], floor, { isRemovalMode: false }
+        );
+        for (const ss of ovSubSurfs) {
+          if (!ss.tiles.length) continue;
+          const ssGroutRgb = hexToRgb(ss.groutColor);
+          const ssG = svgEl("g", { opacity: 0.8 });
+          for (const tile of ss.tiles.slice(0, 1000)) {
+            if (!tile.d) continue;
+            ssG.appendChild(svgEl("path", {
+              d: tile.d,
+              fill: "rgba(100, 116, 139, 0.5)",
+              stroke: ss.groutColor,
+              "stroke-width": 0.2,
+            }));
+          }
+          roomGroup.appendChild(ssG);
+          console.log(`[render:2D-subSurface-overview] room=${room.id} excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
         }
       } catch (e) {
         console.warn(`Floor tiles rendering failed for room ${room.name || room.id}:`, e);

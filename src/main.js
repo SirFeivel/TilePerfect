@@ -15,7 +15,7 @@ import { initFullscreen } from "./fullscreen.js";
 import polygonClipping from "polygon-clipping";
 import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts } from "./geometry.js";
 import { getRoomAbsoluteBounds, findPositionOnFreeEdge, validateFloorConnectivity, subtractOverlappingAreas } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
 import { classifyAndExtendRooms } from "./envelope.js";
 import { wireQuickViewToggleHandlers, syncQuickViewToggleStates } from "./quick_view_toggles.js";
 import { createZoomPanController } from "./zoom-pan.js";
@@ -501,6 +501,9 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     return { ...obj, faceTiles };
   });
 
+  const floorSubSurfaces = computeSubSurfaceTiles(state, getAllFloorExclusions(room), floor, { isRemovalMode });
+  console.log(`[main:subSurface-floor] room=${room.id} subSurfaces=${floorSubSurfaces.length}`);
+
   const desc = {
     id: room.id,
     polygonVertices: room.polygonVertices,
@@ -510,6 +513,7 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     groutColor: tileResult.groutColor,
     doorwayFloorPatches,
     objects3d: objects3dWithTiles,
+    subSurfaceTiles: floorSubSurfaces,
   };
   const pos3d = desc.floorPosition;
   const verts3d = desc.polygonVertices || [];
@@ -566,6 +570,9 @@ function prepareFloorWallData(state, floor, wallGeometry) {
         }
       }
 
+      const subSurfaceTiles = computeSubSurfaceTiles(state, region.exclusions || [], floor, { isRemovalMode });
+      console.log(`[main:subSurface-wall] wall=${wall.id} surf=${idx} subSurfaces=${subSurfaceTiles.length}`);
+
       const surfFromCm = surface.fromCm || 0;
       const surfToCm = surface.toCm || edgeLength;
       const tStart = edgeLength > 0 ? surfFromCm / edgeLength : 0;
@@ -597,6 +604,7 @@ function prepareFloorWallData(state, floor, wallGeometry) {
         skirtingOffset: region.skirtingOffset || 0,
         skirtingSegments, // Skirting segments in wall surface coordinates
         skirtingHeight, // Height of skirting for 3D rendering
+        subSurfaceTiles,
       };
     }).filter(Boolean);
 
