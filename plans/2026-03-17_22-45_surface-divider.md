@@ -592,3 +592,36 @@ Tests are `@vitest-environment jsdom` for render layer tests.
 | `src/i18n.js` | Add `dividers` key block |
 | `src/index.html` | Add `#quickDivider` button and `#dividerZoneDropdown`; sidebar `#dividerZoneSection` |
 | `src/divider.test.js` | New — unit + E2E + render layer tests |
+
+---
+
+## Implementation
+
+**Executed:** 2026-03-17 on branch `surface-devider`
+
+### What was done
+
+All 9 steps executed. The plan was followed closely with minor adjustments:
+
+- **Step 1**: `isPointInPolygon` added to geometry.js (new export). polygon-draw.js uses a `[x,y]`-format adapter (`_isPointInPolygon`) since its internal callers use multipolygon ring format — not a violation, both formats serve different call sites.
+- **Step 7**: `renderDividerZoneUI` uses per-zone IDs (`qzEnabled_${zoneId}` etc.) instead of global `qzEnabled` to avoid collisions when multiple zones are displayed. `commitZoneSettings` in `dividers.js` reads from the DOM using the passed `zoneId` as a suffix.
+- **Step 7**: Sidebar `#dividerZoneSection` omitted — the quick-bar dropdown is sufficient for the initial implementation.
+- **State migration**: V14→V15 added; default state bumped to V15; all version tests updated.
+
+### Core findings
+
+1. **polygon-draw.js ring format mismatch**: `isPointInPolygon` in polygon-draw.js used `[x,y]` arrays (multipolygon ring format from polygon-clipping). The new geometry.js version uses `{x,y}` objects. A thin adapter wraps internal callers — this is the correct one-source-of-truth approach; the geometry.js version is the canonical external API.
+2. **`wallSurfaceToTileableRegion` gap**: Confirmed — explicitly selects return fields and did NOT forward `dividers`/`zoneSettings`. Fixed in Step 3.
+3. **Zone IDs are centroid-derived and stable**: `zone_${Math.round(cx)}_${Math.round(cy)}` — stable as long as the polygon shape doesn't change. Moving a divider changes zone centroids and thus orphans old zoneSettings keys (cleaned up by `deleteDivider`).
+4. **`computeZoneTiles` returns all zones**: Even untiled zones are returned (with `tiles: []`) so the render layer can draw zone outlines. This matches the plan.
+
+### Final test count
+
+**67 test files, 1460 tests passed, 7 skipped** (all green).
+
+### Unverified (runtime)
+
+- `#quickDivider` button draw mode in browser (edge snap, angle snap, line preview)
+- Zone tile rendering in 2D and 3D views
+- `commitZoneSettings` panel interaction
+- `deleteDivider` from quick-bar
