@@ -2,7 +2,7 @@
 import { uuid, DEFAULT_SKIRTING_CONFIG, DEFAULT_TILE_PRESET } from "./core.js";
 import { findSharedEdgeMatches } from "./floor_geometry.js";
 import { DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM, WALL_ADJACENCY_TOLERANCE_CM, EPSILON } from "./constants.js";
-import { computeSkirtingSegments, roomPolygon, computeAvailableArea, tilesForPreview, computeSurfaceContacts } from "./geometry.js";
+import { computeSkirtingSegments, roomPolygon, computeAvailableArea, tilesForPreview, computeSurfaceContacts, exclusionToRegion } from "./geometry.js";
 import polygonClipping from "polygon-clipping";
 import { FLOOR_PLAN_RULES, snapToWallType } from "./floor-plan-rules.js";
 import { enforceSkeletonWallProperties, computeStructuralBoundaries } from "./skeleton.js";
@@ -2162,6 +2162,29 @@ export function computeSurfaceTiles(state, region, floor, options = {}) {
   console.log(`[computeSurfaceTiles] result tiles=${result.tiles?.length ?? 0} error=${result.error || 'none'}`);
 
   return { tiles: result.tiles || [], groutColor, error: result.error || null };
+}
+
+export function computeSubSurfaceTiles(state, exclusions, floor, opts = {}) {
+  const { isRemovalMode = false } = opts;
+  const results = [];
+  console.log(`[walls:computeSubSurfaceTiles] checking ${(exclusions || []).length} exclusions for sub-surfaces`);
+  for (const excl of (exclusions || [])) {
+    if (!excl.tile) continue;
+    const region = exclusionToRegion(excl);
+    if (!region) {
+      console.warn(`[walls:computeSubSurfaceTiles] excl=${excl.id} type=${excl.type}: exclusionToRegion returned null`);
+      continue;
+    }
+    const r = computeSurfaceTiles(state, region, floor, {
+      exclusions: [],
+      includeDoorwayPatches: false,
+      effectiveSettings: { tile: region.tile, grout: region.grout, pattern: region.pattern },
+      isRemovalMode,
+    });
+    console.log(`[walls:subSurface] excl=${excl.id} type=${excl.type} tiles=${r.tiles.length} error=${r.error || 'none'}`);
+    results.push({ exclusionId: excl.id, tiles: r.tiles, groutColor: r.groutColor, error: r.error });
+  }
+  return results;
 }
 
 /**

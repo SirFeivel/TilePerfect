@@ -603,6 +603,7 @@ function renderSurface3D(opts) {
   // --- Exclusions ---
   if (exclusions && exclusions.length > 0) {
     const OBJ3D_FLOOR_COLOR = 0x22c55e;
+    const TILED_EXCL_COLOR = 0x22c55e;
     const exclMat = new THREE.MeshBasicMaterial({
       color: EXCLUSION_COLOR,
       transparent: true,
@@ -623,6 +624,16 @@ function renderSurface3D(opts) {
       polygonOffsetFactor: exclZBias !== 0 ? exclZBias : 0,
       polygonOffsetUnits: exclZBias !== 0 ? exclZBias : 0,
     });
+    const tiledExclMat = new THREE.MeshBasicMaterial({
+      color: TILED_EXCL_COLOR,
+      transparent: true,
+      opacity: 0.12,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      polygonOffset: exclZBias !== 0,
+      polygonOffsetFactor: exclZBias !== 0 ? exclZBias : 0,
+      polygonOffsetUnits: exclZBias !== 0 ? exclZBias : 0,
+    });
     const exclLineMat = new THREE.LineBasicMaterial({
       color: EXCLUSION_COLOR,
       transparent: true,
@@ -633,15 +644,21 @@ function renderSurface3D(opts) {
       transparent: true,
       opacity: 0.8,
     });
+    const tiledExclLineMat = new THREE.LineBasicMaterial({
+      color: TILED_EXCL_COLOR,
+      transparent: true,
+      opacity: 0.8,
+    });
 
     for (const ex of exclusions) {
       const shape = exclusionToShape(ex);
       if (!shape) continue;
       const isObj3d = ex._isObject3d;
+      const isTiled = !!ex.tile;
 
       const geo = new THREE.ShapeGeometry(shape);
       transformShapeGeo(geo, mapper);
-      const mesh = new THREE.Mesh(geo, isObj3d ? obj3dMat : exclMat);
+      const mesh = new THREE.Mesh(geo, isObj3d ? obj3dMat : (isTiled ? tiledExclMat : exclMat));
       mesh.userData = { type: "exclusion" };
       meshes.push(mesh);
 
@@ -654,7 +671,7 @@ function renderSurface3D(opts) {
       }
       linePoints.push(linePoints[0].clone());
       const lineGeo = new THREE.BufferGeometry().setFromPoints(linePoints);
-      const line = new THREE.Line(lineGeo, isObj3d ? obj3dLineMat : exclLineMat);
+      const line = new THREE.Line(lineGeo, isObj3d ? obj3dLineMat : (isTiled ? tiledExclLineMat : exclLineMat));
       line.userData = { type: "exclusionEdge" };
       lines.push(line);
     }
@@ -880,6 +897,21 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       });
       for (const m of meshes) { m.position.y = EXCL_Y; scene.add(m); }
       for (const l of lines) { l.position.y = EXCL_Y; scene.add(l); }
+    }
+
+    // Sub-surface tile batches on floor
+    for (const ss of (roomDesc.subSurfaceTiles || [])) {
+      if (!ss.tiles.length) continue;
+      const floorMapper = createFloorMapper(pos);
+      const { meshes, lines } = renderSurface3D({
+        tiles: ss.tiles,
+        exclusions: [],
+        groutColor: ss.groutColor,
+        mapper: floorMapper,
+      });
+      for (const m of meshes) { m.position.y = SURFACE_TILE_OFFSET; scene.add(m); }
+      for (const l of lines) { l.position.y = SURFACE_TILE_OFFSET; scene.add(l); }
+      console.log(`[three-view:subSurface-floor] excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
     }
 
     // --- 3D Objects (extruded boxes) ---
@@ -1224,6 +1256,22 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       });
       for (const m of meshes) scene.add(m);
       for (const l of lines) scene.add(l);
+
+      // Sub-surface tile batches on wall face
+      for (const ss of (surf.subSurfaceTiles || [])) {
+        if (!ss.tiles.length) continue;
+        const { meshes: ssMeshes, lines: ssLines } = renderSurface3D({
+          tiles: ss.tiles,
+          exclusions: [],
+          groutColor: ss.groutColor,
+          mapper: tileMapper,
+          tileZBias: 0,
+          exclZBias: 0,
+        });
+        for (const m of ssMeshes) scene.add(m);
+        for (const l of ssLines) scene.add(l);
+        console.log(`[three-view:subSurface-wall] excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
+      }
 
       // Render actual skirting segments in 3D
       if (surf.skirtingOffset > 0 && surf.skirtingSegments && surf.skirtingSegments.length > 0) {
