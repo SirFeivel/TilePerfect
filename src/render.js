@@ -3,7 +3,7 @@ import polygonClipping from "polygon-clipping";
 import { computePlanMetrics, computeSkirtingNeeds, computeGrandTotals, computeProjectTotals, getRoomPricing } from "./calc.js";
 import { validateState } from "./validation.js";
 import { escapeHTML, getCurrentRoom, getCurrentFloor, getSelectedWall, getSelectedSurface, DEFAULT_TILE_PRESET, DEFAULT_SKIRTING_PRESET, DEFAULT_WASTE } from "./core.js";
-import { setInlineEditing, getUiState } from "./ui_state.js";
+import { getUiState } from "./ui_state.js";
 import { t } from "./i18n.js";
 import {
   svgEl,
@@ -29,206 +29,8 @@ function isCircleRoom(room) {
   return room?.circle && room.circle.rx > 0;
 }
 
-
-let activeSvgEdit = null;
-
-function closeSvgEdit(commit) {
-  if (!activeSvgEdit) return;
-  const { group, onCommit, buffer, onKeyDown, onPointerDown } = activeSvgEdit;
-  if (commit) {
-    const value = Number(buffer);
-    if (Number.isFinite(value)) {
-      onCommit(value);
-    }
-  }
-  if (onKeyDown) document.removeEventListener("keydown", onKeyDown);
-  if (onPointerDown) document.removeEventListener("pointerdown", onPointerDown, true);
-  group.remove();
-  activeSvgEdit = null;
-  setInlineEditing(false);
-}
-
-function updateEditText() {
-  if (!activeSvgEdit) return;
-  const { textEl, buffer, prefix } = activeSvgEdit;
-  textEl.textContent = `${prefix || ""}|${buffer}`;
-}
-
-function startSvgEdit({ svg, x, y, angle = 0, value, onCommit, onCancel, textStyle, anchor = "middle", prefix = "" }) {
-  closeSvgEdit(false);
-
-  const group = svgEl("g", { "data-inline-edit": "true" });
-  if (angle) {
-    group.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
-  }
-  const textEl = svgEl("text", { ...textStyle, x, y, "text-anchor": anchor, "dominant-baseline": "middle" });
-  group.appendChild(textEl);
-  svg.appendChild(group);
-
-  activeSvgEdit = {
-    group,
-    textEl,
-    buffer: Number.isFinite(value) ? value.toFixed(2) : String(value ?? ""),
-    onCommit,
-    onCancel,
-    prefix,
-    replaceOnType: true
-  };
-
-  updateEditText();
-  setInlineEditing(true);
-
-  const onKeyDown = (e) => {
-    if (!activeSvgEdit) return;
-    if (e.key === "Enter") {
-      e.preventDefault();
-      closeSvgEdit(true);
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closeSvgEdit(false);
-      if (activeSvgEdit?.onCancel) activeSvgEdit.onCancel();
-      return;
-    }
-    if (e.key === "Backspace") {
-      e.preventDefault();
-      if (activeSvgEdit.replaceOnType) {
-        activeSvgEdit.buffer = "";
-        activeSvgEdit.replaceOnType = false;
-      } else {
-        activeSvgEdit.buffer = activeSvgEdit.buffer.slice(0, -1);
-      }
-      updateEditText();
-      return;
-    }
-    if (e.key.length === 1) {
-      const ch = e.key === "," ? "." : e.key;
-      if (/^[0-9.\-]$/.test(ch)) {
-        e.preventDefault();
-        if (activeSvgEdit.replaceOnType) {
-          activeSvgEdit.buffer = ch;
-          activeSvgEdit.replaceOnType = false;
-          updateEditText();
-          return;
-        }
-        if (ch === "-" && activeSvgEdit.buffer.length > 0) return;
-        if (ch === "." && activeSvgEdit.buffer.includes(".")) return;
-        activeSvgEdit.buffer += ch;
-        updateEditText();
-      }
-    }
-  };
-
-  const onPointerDown = (e) => {
-    if (!activeSvgEdit) return;
-    if (e.composedPath().includes(group)) return;
-    closeSvgEdit(true);
-    if (activeSvgEdit?.onCancel) activeSvgEdit.onCancel();
-  };
-
-  document.addEventListener("keydown", onKeyDown);
-  document.addEventListener("pointerdown", onPointerDown, true);
-
-  activeSvgEdit.onKeyDown = onKeyDown;
-  activeSvgEdit.onPointerDown = onPointerDown;
-}
-
-let activeSvgTextEdit = null;
-
-function closeSvgTextEdit(commit) {
-  if (!activeSvgTextEdit) return;
-  const { group, onCommit, onCancel, buffer, onKeyDown, onPointerDown } = activeSvgTextEdit;
-  if (commit && buffer.trim()) {
-    onCommit(buffer);
-  } else if (!commit && onCancel) {
-    onCancel();
-  }
-  if (onKeyDown) document.removeEventListener("keydown", onKeyDown);
-  if (onPointerDown) document.removeEventListener("pointerdown", onPointerDown, true);
-  group.remove();
-  activeSvgTextEdit = null;
-  setInlineEditing(false);
-}
-
-function updateTextEditDisplay() {
-  if (!activeSvgTextEdit) return;
-  const { textEl, buffer } = activeSvgTextEdit;
-  textEl.textContent = buffer + "|";
-}
-
-/**
- * Start inline text editing for arbitrary text (not just numbers)
- */
-function startSvgTextEdit({ svg, x, y, value, onCommit, onCancel, textStyle, anchor = "middle" }) {
-  closeSvgTextEdit(false);
-  closeSvgEdit(false);
-
-  const group = svgEl("g", { "data-inline-edit": "true" });
-  const textEl = svgEl("text", { ...textStyle, x, y, "text-anchor": anchor, "dominant-baseline": "middle" });
-  group.appendChild(textEl);
-  svg.appendChild(group);
-
-  activeSvgTextEdit = {
-    group,
-    textEl,
-    buffer: String(value ?? ""),
-    onCommit,
-    onCancel,
-    replaceOnType: true
-  };
-
-  updateTextEditDisplay();
-  setInlineEditing(true);
-
-  const onKeyDown = (e) => {
-    if (!activeSvgTextEdit) return;
-    if (e.key === "Enter") {
-      e.preventDefault();
-      closeSvgTextEdit(true);
-      return;
-    }
-    if (e.key === "Escape") {
-      e.preventDefault();
-      closeSvgTextEdit(false);
-      return;
-    }
-    if (e.key === "Backspace") {
-      e.preventDefault();
-      if (activeSvgTextEdit.replaceOnType) {
-        activeSvgTextEdit.buffer = "";
-        activeSvgTextEdit.replaceOnType = false;
-      } else {
-        activeSvgTextEdit.buffer = activeSvgTextEdit.buffer.slice(0, -1);
-      }
-      updateTextEditDisplay();
-      return;
-    }
-    // Accept any printable character
-    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-      e.preventDefault();
-      if (activeSvgTextEdit.replaceOnType) {
-        activeSvgTextEdit.buffer = e.key;
-        activeSvgTextEdit.replaceOnType = false;
-      } else {
-        activeSvgTextEdit.buffer += e.key;
-      }
-      updateTextEditDisplay();
-    }
-  };
-
-  const onPointerDown = (e) => {
-    if (!activeSvgTextEdit) return;
-    if (e.composedPath().includes(group)) return;
-    closeSvgTextEdit(true);
-  };
-
-  document.addEventListener("keydown", onKeyDown);
-  document.addEventListener("pointerdown", onPointerDown, true);
-
-  activeSvgTextEdit.onKeyDown = onKeyDown;
-  activeSvgTextEdit.onPointerDown = onPointerDown;
-}
+import { startSvgEdit, startSvgTextEdit, cancelSvgEdit, commitSvgEdit } from "./svg-inline-edit.js";
+export { startSvgEdit, startSvgTextEdit, cancelSvgEdit, commitSvgEdit };
 
 /**
  * Convert hex color to RGB components
@@ -373,109 +175,9 @@ export function renderWarnings(state, validateState) {
   }
 }
 
-export function renderMetrics(state) {
-  const areaEl = document.getElementById("metricArea");
-  const tilesEl = document.getElementById("metricTiles");
-  const packsEl = document.getElementById("metricPacks");
-  const costEl = document.getElementById("metricCost");
-  const cutTilesEl = document.getElementById("metricCutTiles");
-  const wasteEl = document.getElementById("metricWaste");
 
-  if (!areaEl || !tilesEl || !packsEl || !costEl) return;
-
-  const { errors } = validateState(state);
-  const ratioError = errors.find(e => 
-    e.title.includes(t("validation.herringboneRatioTitle")) || 
-    e.title.includes(t("validation.doubleHerringboneRatioTitle")) || 
-    e.title.includes(t("validation.basketweaveRatioTitle"))
-  );
-
-  const m = computePlanMetrics(state);
-  if (!m.ok || ratioError) {
-    areaEl.textContent = "–";
-    tilesEl.textContent = "–";
-    packsEl.textContent = "–";
-    costEl.textContent = ratioError ? `${t("warnings.error")}: ${ratioError.title}` : m.error;
-    if (cutTilesEl) cutTilesEl.textContent = "–";
-    if (wasteEl) wasteEl.textContent = "–";
-
-    const grandBox = document.getElementById("grandTotalBox");
-    if (grandBox) grandBox.style.display = "none";
-    
-    return;
-  }
-
-  const d = m.data;
-  const f2 = (x) => (Number.isFinite(x) ? x.toFixed(2) : "–");
-  const f1 = (x) => (Number.isFinite(x) ? x.toFixed(1) : "–");
-
-  areaEl.textContent = `${f2(d.area.netAreaM2)} m²`;
-  tilesEl.textContent = `${d.tiles.totalTilesWithReserve} (${d.tiles.fullTiles} full, ${d.tiles.cutTiles} cut, ${d.tiles.reusedCuts} reused)`;
-
-  const packs = d.pricing.packs;
-  if (packs !== null && packs > 0) {
-    packsEl.textContent = `${packs} (${f2(d.material.purchasedAreaM2)} m²)`;
-  } else {
-    packsEl.textContent = `${f2(d.material.purchasedAreaM2)} m²`;
-  }
-
-  costEl.textContent = `${f2(d.pricing.priceTotal)} €`;
-
-  if (cutTilesEl) {
-    cutTilesEl.textContent = `${d.labor.cutTiles} (${f1(d.labor.cutTilesPct)}%)`;
-  }
-
-  if (wasteEl) {
-    wasteEl.textContent = `${f2(d.material.wasteAreaM2)} m² (${f1(d.material.wastePct)}%, ~${d.material.wasteTiles_est} tiles)`;
-  }
-
-  // Skirting Metrics
-  const skirting = computeSkirtingNeeds(state);
-  const skirtingBox = document.getElementById("skirtingMetricsBox");
-  if (skirtingBox) {
-    if (skirting.enabled) {
-      skirtingBox.style.display = "block";
-      document.getElementById("metricSkirtingLength").textContent = skirting.totalLengthCm.toFixed(1);
-      document.getElementById("metricSkirtingCount").textContent = skirting.count;
-      document.getElementById("metricSkirtingCost").textContent = skirting.totalCost.toFixed(2) + " €";
-      
-      const labelCount = document.getElementById("labelSkirtingPieces");
-      const stripsWrap = document.getElementById("stripsPerTileWrap");
-      
-      if (skirting.type === "bought") {
-        labelCount.textContent = t("skirting.pieces");
-        stripsWrap.style.display = "none";
-      } else {
-        labelCount.textContent = t("skirting.additionalTiles");
-        stripsWrap.style.display = "block";
-        document.getElementById("metricSkirtingStripsPerTile").textContent = skirting.stripsPerTile;
-      }
-    } else {
-      skirtingBox.style.display = "none";
-    }
-  }
-
-  // Grand Total Metrics
-  const grand = computeGrandTotals(state);
-  const grandBox = document.getElementById("grandTotalBox");
-  if (grandBox) {
-    if (grand.ok && grand.skirtingEnabled && !ratioError) {
-      grandBox.style.display = "block";
-      document.getElementById("metricGrandTotalTiles").textContent = grand.totalTiles;
-      
-      const packsEl = document.getElementById("metricGrandTotalPacks");
-      if (grand.totalPacks !== null) {
-        packsEl.textContent = `${grand.totalPacks} (${f2(grand.purchasedAreaM2)} m²)`;
-      } else {
-        packsEl.textContent = `${f2(grand.purchasedAreaM2)} m²`;
-      }
-
-      document.getElementById("metricGrandTotalCost").textContent = grand.totalCost.toFixed(2) + " €";
-    } else {
-      grandBox.style.display = "none";
-    }
-  }
-}
+import { renderMetrics } from "./render-metrics.js";
+export { renderMetrics };
 
 export function renderStateView(state) {
   const el = document.getElementById("stateView");
@@ -842,371 +544,8 @@ export function renderSkirtingRoomList(state, { onToggleRoom, onToggleSection })
 }
 
 
-export function renderTilePresetPicker(state, currentRoom) {
-  const sel = document.getElementById("tilePresetSelect");
-  if (!sel) return;
-  const presets = state.tilePresets || [];
-  sel.innerHTML = "";
-  sel.disabled = presets.length === 0;
-  const presetRow = document.getElementById("tilePresetRow");
-  const emptyRow = document.getElementById("tilePresetEmptyRow");
-  if (presetRow) presetRow.classList.toggle("hidden", presets.length === 0);
-  if (emptyRow) emptyRow.classList.toggle("hidden", presets.length > 0);
-  let matchId = "";
-  const ref = currentRoom?.tile?.reference;
-  if (ref) {
-    const match = presets.find(p => p?.name && p.name === ref);
-    if (match) matchId = match.id;
-  }
-  presets.forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.name || t("project.none");
-    if (p.id === matchId) opt.selected = true;
-    sel.appendChild(opt);
-  });
-}
-
-export function renderSkirtingPresetPicker(state) {
-  const sel = document.getElementById("skirtingPresetSelect");
-  if (!sel) return;
-  const presets = state.skirtingPresets || [];
-  sel.innerHTML = "";
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = presets.length ? "–" : t("project.none");
-  sel.appendChild(empty);
-  presets.forEach(p => {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.name || t("project.none");
-    sel.appendChild(opt);
-  });
-}
-
-
-export function renderReferencePicker(state) {
-  const dl = document.getElementById("tileReferences");
-  if (!dl) return;
-
-  const refs = new Set();
-  if (state.materials) {
-    Object.keys(state.materials).forEach((r) => {
-      if (r) refs.add(r);
-    });
-  }
-  if (Array.isArray(state.tilePresets)) {
-    state.tilePresets.forEach(p => {
-      if (p?.name) refs.add(p.name);
-    });
-  }
-  if (state.floors) {
-    state.floors.forEach((f) => {
-      if (f.rooms) {
-        f.rooms.forEach((rm) => {
-          if (rm.tile?.reference) refs.add(rm.tile.reference);
-        });
-      }
-    });
-  }
-
-  dl.innerHTML = "";
-  Array.from(refs)
-    .sort()
-    .forEach((r) => {
-      const opt = document.createElement("option");
-      opt.value = r;
-      dl.appendChild(opt);
-    });
-}
-
-export function renderTilePatternForm(state) {
-  const currentRoom = getCurrentRoom(state);
-  const currentFloor = getCurrentFloor(state);
-  const uiState = getUiState();
-  const tileEditActive = uiState.tileEditActive;
-  const tileEditDirty = uiState.tileEditDirty;
-  const tileEditMode = uiState.tileEditMode || "edit";
-  const tileEditHasPreset = uiState.tileEditHasPreset === true;
-
-  // When a wall surface is selected, show its tile/grout/pattern in the form
-  const selectedSurface = getSelectedSurface(state);
-  const surfaceHasTiling = selectedSurface?.tile != null;
-
-  // Check if room is a child in a pattern group (inherits settings from origin)
-  const isChild = !surfaceHasTiling && isPatternGroupChild(currentRoom, currentFloor);
-  const effectiveSettings = isChild ? getEffectiveTileSettings(currentRoom, currentFloor) : null;
-  const displayRoom = surfaceHasTiling ? {
-    ...currentRoom,
-    tile: selectedSurface.tile,
-    grout: selectedSurface.grout,
-    pattern: selectedSurface.pattern
-  } : isChild && effectiveSettings ? {
-    ...currentRoom,
-    tile: effectiveSettings.tile,
-    pattern: effectiveSettings.pattern,
-    grout: effectiveSettings.grout
-  } : currentRoom;
-
-  // Show/hide pattern group child notice and overlay
-  let childNotice = document.getElementById("patternGroupChildNotice");
-  if (!childNotice) {
-    // Create notice element if it doesn't exist
-    const tileSection = document.getElementById("planningTileSection");
-    if (tileSection) {
-      childNotice = document.createElement("div");
-      childNotice.id = "patternGroupChildNotice";
-      childNotice.className = "pattern-group-child-notice";
-      const sectionTitle = tileSection.querySelector(".panel-section-title");
-      if (sectionTitle) {
-        sectionTitle.after(childNotice);
-      }
-    }
-  }
-
-  // Get origin room info for messages
-  const group = isChild ? getRoomPatternGroup(currentFloor, currentRoom?.id) : null;
-  const originRoom = group ? currentFloor?.rooms?.find(r => r.id === group.originRoomId) : null;
-  const originName = originRoom?.name || "Origin";
-
-  if (childNotice) {
-    childNotice.classList.toggle("hidden", !isChild);
-    if (isChild) {
-      childNotice.innerHTML = `<span class="notice-icon">🔗</span> ${t("patternGroups.childNotice").replace("{origin}", originName)}`;
-    }
-  }
-
-  // Add locked class to settings panel sections for pattern group children
-  // This enables CSS pseudo-element overlays that capture clicks
-  const tileFieldsSection = document.querySelector("#planningTileSection .panel-fields");
-  const groutFieldsSection = document.getElementById("groutW")?.closest(".panel-section")?.querySelector(".panel-fields");
-  const patternFieldsSection = document.getElementById("patternType")?.closest(".panel-section")?.querySelector(".panel-fields");
-
-  [tileFieldsSection, groutFieldsSection, patternFieldsSection].forEach(section => {
-    if (section) {
-      section.classList.toggle("pattern-group-locked", isChild);
-      if (isChild) {
-        section.dataset.originName = originName;
-      }
-    }
-  });
-
-  renderReferencePicker(state);
-  renderTilePresetPicker(state, currentRoom);
-  renderSkirtingPresetPicker(state);
-
-  const editToggle = document.getElementById("tileConfigEditToggle");
-  if (editToggle) {
-    editToggle.checked = tileEditActive;
-    editToggle.disabled = isChild;
-  }
-
-  const ref = displayRoom?.tile?.reference;
-  const preset = ref ? state.tilePresets?.find(p => p?.name && p.name === ref) : null;
-  const editActions = document.getElementById("tileEditActions");
-  if (editActions) editActions.classList.toggle("hidden", !tileEditActive || isChild);
-  const editUpdateBtn = document.getElementById("tileEditUpdateBtn");
-  const editSaveBtn = document.getElementById("tileEditSaveBtn");
-  const hasPreset = tileEditHasPreset || Boolean(preset);
-  if (editUpdateBtn) editUpdateBtn.style.display = tileEditActive && !isChild && tileEditMode !== "create" && hasPreset ? "" : "none";
-  if (editSaveBtn) editSaveBtn.style.display = tileEditActive && !isChild && (tileEditMode === "create" || hasPreset) ? "" : "none";
-  if (editSaveBtn) {
-    editSaveBtn.textContent = tileEditMode === "create"
-      ? t("planning.tileEditSaveCreate")
-      : t("planning.tileEditSaveNew");
-  }
-
-  const isCreateMode = tileEditMode === "create";
-  const tileShapeEl = document.getElementById("tileShape");
-  if (tileShapeEl) tileShapeEl.value = displayRoom?.tile?.shape ?? "rect";
-  const tileWEl = document.getElementById("tileW");
-  const tileHEl = document.getElementById("tileH");
-  if (!isCreateMode) {
-    if (tileWEl) tileWEl.value = displayRoom?.tile?.widthCm ?? "";
-    if (tileHEl) tileHEl.value = displayRoom?.tile?.heightCm ?? "";
-  }
-  // Display grout in mm (state stores cm)
-  document.getElementById("groutW").value = Math.round((displayRoom?.grout?.widthCm ?? 0) * 10);
-  const groutColorValue = displayRoom?.grout?.colorHex ?? "#ffffff";
-  document.getElementById("groutColor").value = groutColorValue;
-  const pricing = displayRoom ? getRoomPricing(state, displayRoom) : { pricePerM2: 0, packM2: 0 };
-  const pricePerM2 = document.getElementById("tilePricePerM2");
-  if (pricePerM2 && !isCreateMode) pricePerM2.value = pricing.pricePerM2 ?? 0;
-  const packM2 = document.getElementById("tilePackM2");
-  if (packM2 && !isCreateMode) packM2.value = pricing.packM2 ?? 0;
-  const pricePerPack = document.getElementById("tilePricePerPack");
-  if (pricePerPack) {
-    const packVal = Number(pricing.packM2) || 0;
-    const perM2 = Number(pricing.pricePerM2) || 0;
-    pricePerPack.value = packVal > 0 ? (packVal * perM2).toFixed(2) : "";
-  }
-  const allowSkirting = document.getElementById("tileAllowSkirting");
-  if (allowSkirting && !isCreateMode) allowSkirting.checked = Boolean(preset?.useForSkirting);
-
-  // Tile edit inputs - disabled when child in pattern group
-  const editInputs = [
-    "tileReference",
-    "tileShape",
-    "tileW",
-    "tileH",
-    "tilePricePerM2",
-    "tilePackM2",
-    "tileAllowSkirting"
-  ];
-  editInputs.forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = isChild || !tileEditActive;
-  });
-  const refInput = document.getElementById("tileReference");
-  if (refInput) {
-    if (tileEditActive && !isChild) {
-      refInput.removeAttribute("list");
-    } else {
-      refInput.setAttribute("list", "tileReferences");
-    }
-  }
-  const tileConfigFields = document.querySelector(".tile-config-fields");
-  if (tileConfigFields) tileConfigFields.classList.toggle("is-readonly", isChild || !tileEditActive);
-
-  // Tile preset select - disabled when child in pattern group
-  const tilePresetSelect = document.getElementById("tilePresetSelect");
-  if (tilePresetSelect) tilePresetSelect.disabled = isChild;
-
-  // Update preset swatch selection
-  document.querySelectorAll("#groutColorPresets .color-swatch").forEach(swatch => {
-    if (swatch.dataset.color?.toLowerCase() === groutColorValue.toLowerCase()) {
-      swatch.classList.add("selected");
-    } else {
-      swatch.classList.remove("selected");
-    }
-  });
-
-  // Grout controls - disabled when child in pattern group
-  const groutWEl = document.getElementById("groutW");
-  const groutColorEl = document.getElementById("groutColor");
-  if (groutWEl) groutWEl.disabled = isChild;
-  if (groutColorEl) groutColorEl.disabled = isChild;
-  document.querySelectorAll("#groutColorPresets .color-swatch").forEach(swatch => {
-    swatch.classList.toggle("disabled", isChild);
-  });
-
-  document.getElementById("patternType").value = displayRoom?.pattern?.type ?? "grid";
-  document.getElementById("bondFraction").value = String(
-    displayRoom?.pattern?.bondFraction ?? 0.5
-  );
-  document.getElementById("rotationDeg").value = String(
-    displayRoom?.pattern?.rotationDeg ?? 0
-  );
-  document.getElementById("offsetX").value = displayRoom?.pattern?.offsetXcm ?? 0;
-  document.getElementById("offsetY").value = displayRoom?.pattern?.offsetYcm ?? 0;
-
-  document.getElementById("originPreset").value =
-    displayRoom?.pattern?.origin?.preset ?? "tl";
-  document.getElementById("originX").value = displayRoom?.pattern?.origin?.xCm ?? 0;
-  document.getElementById("originY").value = displayRoom?.pattern?.origin?.yCm ?? 0;
-
-  // Pattern controls - disabled when child in pattern group
-  const patternInputs = [
-    "patternType",
-    "bondFraction",
-    "rotationDeg",
-    "offsetX",
-    "offsetY",
-    "originPreset",
-    "originX",
-    "originY"
-  ];
-  patternInputs.forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.disabled = isChild;
-  });
-
-  const isRB = displayRoom?.pattern?.type === "runningBond";
-  if (!isChild) {
-    document.getElementById("bondFraction").disabled = !isRB;
-  }
-  // Also hide bondFraction field if not RB
-  const bondFractionField = document.getElementById("bondFraction")?.closest(".field");
-  if (bondFractionField) {
-    bondFractionField.style.display = isRB ? "" : "none";
-  }
-
-  const shape = displayRoom?.tile?.shape || "rect";
-  const tileHField = document.getElementById("tileHeightField");
-  const hexHint = document.getElementById("hexHint");
-
-  if (shape === "hex") {
-    if (tileHField) tileHField.style.display = "none";
-    if (hexHint) hexHint.style.display = "block";
-    const patternTypeField = document.getElementById("patternType")?.closest(".field");
-    if (patternTypeField) patternTypeField.style.display = "none";
-  } else if (shape === "square") {
-    if (tileHField) tileHField.style.display = "none";
-    if (hexHint) hexHint.style.display = "none";
-    const patternTypeField = document.getElementById("patternType")?.closest(".field");
-    if (patternTypeField) patternTypeField.style.display = "";
-
-    // Update applicable patterns for square
-    const patternTypeSelect = document.getElementById("patternType");
-    if (patternTypeSelect) {
-      Array.from(patternTypeSelect.options).forEach(opt => {
-        const squareInapplicable = ["herringbone", "doubleHerringbone", "basketweave", "verticalStackAlternating"];
-        opt.hidden = squareInapplicable.includes(opt.value);
-        opt.disabled = opt.hidden;
-      });
-    }
-  } else if (shape === "rhombus") {
-    if (tileHField) tileHField.style.display = "";
-    if (hexHint) hexHint.style.display = "none";
-    const patternTypeField = document.getElementById("patternType")?.closest(".field");
-    if (patternTypeField) patternTypeField.style.display = "none";
-  } else {
-    if (tileHField) tileHField.style.display = "";
-    if (hexHint) hexHint.style.display = "none";
-    const patternTypeField = document.getElementById("patternType")?.closest(".field");
-    if (patternTypeField) patternTypeField.style.display = "";
-
-    // Update applicable patterns
-    const patternTypeSelect = document.getElementById("patternType");
-    if (patternTypeSelect) {
-      const tw = currentRoom?.tile?.widthCm || 0;
-      const th = currentRoom?.tile?.heightCm || 0;
-      const isSquare = Math.abs(tw - th) < EPSILON;
-
-      Array.from(patternTypeSelect.options).forEach(opt => {
-        if (isSquare && tw > 0) {
-          const squareInapplicable = ["herringbone", "doubleHerringbone", "basketweave", "verticalStackAlternating"];
-          opt.hidden = squareInapplicable.includes(opt.value);
-          opt.disabled = opt.hidden;
-        } else {
-          opt.hidden = false;
-          opt.disabled = false;
-        }
-      });
-    }
-  }
-
-  const reserveTiles = document.getElementById("reserveTiles");
-  if (reserveTiles) reserveTiles.value = state.pricing?.reserveTiles ?? 0;
-
-  // Waste options
-  const allowRotate = document.getElementById("wasteAllowRotate");
-  if (allowRotate) allowRotate.checked = state?.waste?.allowRotate !== false;
-
-  const shareOffcuts = document.getElementById("wasteShareOffcuts");
-  if (shareOffcuts) shareOffcuts.checked = Boolean(state?.waste?.shareOffcuts);
-
-  const optimizeCuts = document.getElementById("wasteOptimizeCuts");
-  if (optimizeCuts) optimizeCuts.checked = Boolean(state?.waste?.optimizeCuts);
-
-  // Debug option
-  const debugShowNeeds = document.getElementById("debugShowNeeds");
-  if (debugShowNeeds) debugShowNeeds.checked = Boolean(state?.view?.showNeeds);
-
-  // Schnittbreite
-  const kerfEl = document.getElementById("wasteKerfCm");
-  if (kerfEl) kerfEl.value = Math.round((state?.waste?.kerfCm ?? DEFAULT_WASTE.kerfCm) * 10);
-}
+import { renderTilePatternForm } from "./render-tile-form.js";
+export { renderTilePatternForm };
 
 export function renderExclList(state, selectedExclId) {
   const sel = document.getElementById("exclList");
@@ -1430,6 +769,509 @@ export function renderObj3dProps({
   });
 }
 
+function _renderPlanObjects3d(svg, room, { selectedObj3dId, onObj3dPointerDown, setSelectedObj3d, onObj3dResizeHandlePointerDown }) {
+  const objects3d = room.objects3d || [];
+  if (objects3d.length === 0) return;
+  const gObj = svgEl("g");
+  for (const obj of objects3d) {
+    const isSel = obj.id === selectedObj3dId;
+    const common = {
+      fill: isSel ? "rgba(34,197,94,0.15)" : "rgba(34,197,94,0.06)",
+      stroke: isSel ? "rgba(34,197,94,1)" : "rgba(34,197,94,0.8)",
+      "stroke-width": isSel ? 2 : 1.2,
+      cursor: "move",
+      "data-objid": obj.id
+    };
+
+    let shapeEl;
+    if (obj.type === "rect") {
+      shapeEl = svgEl("rect", { ...common, x: obj.x, y: obj.y, width: obj.w, height: obj.h });
+    } else if (obj.type === "freeform" && obj.vertices?.length >= 3) {
+      const pts = obj.vertices.map(v => `${v.x},${v.y}`).join(" ");
+      shapeEl = svgEl("polygon", { ...common, points: pts });
+    } else if (obj.type === "tri") {
+      const pts = `${obj.p1.x},${obj.p1.y} ${obj.p2.x},${obj.p2.y} ${obj.p3.x},${obj.p3.y}`;
+      shapeEl = svgEl("polygon", { ...common, points: pts });
+    } else {
+      continue;
+    }
+
+    if (onObj3dPointerDown) {
+      shapeEl.addEventListener("pointerdown", onObj3dPointerDown);
+    }
+    if (setSelectedObj3d) {
+      shapeEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setSelectedObj3d(obj.id);
+      });
+    }
+    gObj.appendChild(shapeEl);
+
+    if (isSel && onObj3dResizeHandlePointerDown) {
+      const handleRadius = 6;
+      const handleStyle = {
+        fill: "#22c55e",
+        stroke: "#fff",
+        "stroke-width": 1.5,
+        cursor: "pointer",
+        "data-objid": obj.id
+      };
+
+      if (obj.type === "rect") {
+        const handles = [
+          { type: "nw", x: obj.x, y: obj.y, cursor: "nwse-resize" },
+          { type: "ne", x: obj.x + obj.w, y: obj.y, cursor: "nesw-resize" },
+          { type: "sw", x: obj.x, y: obj.y + obj.h, cursor: "nesw-resize" },
+          { type: "se", x: obj.x + obj.w, y: obj.y + obj.h, cursor: "nwse-resize" },
+          { type: "n", x: obj.x + obj.w / 2, y: obj.y, cursor: "ns-resize" },
+          { type: "s", x: obj.x + obj.w / 2, y: obj.y + obj.h, cursor: "ns-resize" },
+          { type: "w", x: obj.x, y: obj.y + obj.h / 2, cursor: "ew-resize" },
+          { type: "e", x: obj.x + obj.w, y: obj.y + obj.h / 2, cursor: "ew-resize" }
+        ];
+        handles.forEach(h => {
+          const handle = svgEl("circle", {
+            ...handleStyle, cx: h.x, cy: h.y, r: handleRadius,
+            cursor: h.cursor, "data-resize-handle": h.type
+          });
+          handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
+          gObj.appendChild(handle);
+        });
+      } else if (obj.type === "tri") {
+        [{ type: "p1", ...obj.p1 }, { type: "p2", ...obj.p2 }, { type: "p3", ...obj.p3 }].forEach(p => {
+          const handle = svgEl("circle", {
+            ...handleStyle, cx: p.x, cy: p.y, r: handleRadius,
+            cursor: "move", "data-resize-handle": p.type
+          });
+          handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
+          gObj.appendChild(handle);
+        });
+      } else if (obj.type === "freeform" && obj.vertices?.length >= 3) {
+        obj.vertices.forEach((v, i) => {
+          const handle = svgEl("circle", {
+            ...handleStyle, cx: v.x, cy: v.y, r: handleRadius,
+            cursor: "move", "data-resize-handle": `v${i}`
+          });
+          handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
+          gObj.appendChild(handle);
+        });
+      }
+    }
+  }
+  svg.appendChild(gObj);
+}
+
+function _renderPlanWalls(room, state, { isExportBW, selectedWallEdge, selectedDoorwayId, onWallClick, onWallDoubleClick, onDoorwayPointerDown, onDoorwayResizePointerDown, addPillLabel }) {
+  if (isExportBW || isCircleRoom(room) || !(room.polygonVertices?.length >= 3)) return null;
+  const verts = room.polygonVertices;
+  const n = verts.length;
+  const floor = getCurrentFloor(state);
+  const roomWalls = floor ? getWallsForRoom(floor, room.id) : [];
+
+  let roomArea2 = 0;
+  for (let k = 0; k < n; k++) {
+    const kn = (k + 1) % n;
+    roomArea2 += verts[k].x * verts[kn].y - verts[kn].x * verts[k].y;
+  }
+  const windingSign = roomArea2 > 0 ? 1 : -1;
+
+  // Centralized wall geometry for doorway direction + extensions
+  const wallGeometry = floor ? computeFloorWallGeometry(floor) : new Map();
+
+  const wallsGroup = svgEl("g", {});
+  const renderedEdges = new Set();
+
+  for (const wall of roomWalls) {
+    const surface = wall.surfaces?.find(s => s.roomId === room.id);
+    if (!surface) continue;
+    const edgeIdx = surface.edgeIndex;
+    if (edgeIdx == null || edgeIdx < 0 || edgeIdx >= n) continue;
+    if (renderedEdges.has(edgeIdx)) continue;
+    renderedEdges.add(edgeIdx);
+
+    const origA = verts[edgeIdx];
+    const origB = verts[(edgeIdx + 1) % n];
+    const thick = wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM;
+    if (thick <= 0) continue;
+
+    const edgeDx = origB.x - origA.x;
+    const edgeDy = origB.y - origA.y;
+    const origL = Math.hypot(edgeDx, edgeDy);
+    if (origL < 1) continue;
+
+    const edgeDirX = edgeDx / origL;
+    const edgeDirY = edgeDy / origL;
+
+    // Outward normal from CURRENT room's polygon (not the wall's owning room)
+    const normal = { x: windingSign * edgeDy / origL, y: -windingSign * edgeDx / origL };
+
+    // Angle-aware corner extensions from centralized wall geometry
+    const wallDesc = wallGeometry.get(wall.id);
+    const roomExt = wallDesc?.extensions.get(room.id) ?? { extStart: thick, extEnd: thick };
+    const extStart = roomExt.extStart;
+    const extEnd = roomExt.extEnd;
+    const A = { x: origA.x - edgeDirX * extStart, y: origA.y - edgeDirY * extStart };
+    const B = { x: origB.x + edgeDirX * extEnd, y: origB.y + edgeDirY * extEnd };
+    const L = origL + extStart + extEnd;
+    const OA = { x: A.x + normal.x * thick, y: A.y + normal.y * thick };
+    const OB = { x: B.x + normal.x * thick, y: B.y + normal.y * thick };
+
+    const isSel = (edgeIdx === selectedWallEdge);
+    const wallFill = isSel ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.2)";
+    const wallStroke = isSel ? "rgba(59,130,246,0.5)" : "rgba(148,163,184,0.35)";
+
+    const eDx = B.x - A.x, eDy = B.y - A.y;
+    const innerAt = (t) => ({ x: A.x + t * eDx, y: A.y + t * eDy });
+    const outerAt = (t) => ({ x: OA.x + t * (OB.x - OA.x), y: OA.y + t * (OB.y - OA.y) });
+
+    // Aggregate doorways from ALL walls that affect this edge
+    const allDoorways = [];
+    for (const w of roomWalls) {
+      const wSurf = w.surfaces?.find(s => s.roomId === room.id && s.edgeIndex === edgeIdx);
+      if (!wSurf) continue;
+      const wDesc = wallGeometry.get(w.id);
+      const dws = wDesc
+        ? getDoorwaysInEdgeSpace(wDesc, room, edgeIdx)
+        : (w.doorways || []);
+      allDoorways.push(...dws);
+    }
+    const sortedDw = [...allDoorways].sort((a, b) => a.offsetCm - b.offsetCm);
+
+    const drawWallSeg = (tStart, tEnd) => {
+      const iC = innerAt(tStart), iD = innerAt(tEnd);
+      const oC = outerAt(tStart), oD = outerAt(tEnd);
+      const segD = `M ${iC.x} ${iC.y} L ${iD.x} ${iD.y} L ${oD.x} ${oD.y} L ${oC.x} ${oC.y} Z`;
+      const wallSeg = svgEl("path", {
+        d: segD, fill: wallFill, stroke: wallStroke, "stroke-width": 0.5,
+        "pointer-events": "auto", "data-wall-edge": edgeIdx, cursor: "pointer"
+      });
+      wallSeg.addEventListener("pointerenter", () => {
+        if (edgeIdx !== selectedWallEdge) wallSeg.setAttribute("fill", "rgba(59,130,246,0.15)");
+      });
+      wallSeg.addEventListener("pointerleave", () => {
+        if (edgeIdx !== selectedWallEdge) wallSeg.setAttribute("fill", wallFill);
+      });
+      wallSeg.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (onWallClick) onWallClick(edgeIdx);
+      });
+      wallSeg.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        if (onWallDoubleClick) onWallDoubleClick(edgeIdx);
+      });
+      wallsGroup.appendChild(wallSeg);
+    };
+
+    let cursor = 0;
+    for (const dw of sortedDw) {
+      const dwStart = Math.max(0, dw.offsetCm);
+      const dwEnd = Math.min(L, dw.offsetCm + dw.widthCm);
+      if (dwEnd <= dwStart) continue;
+      if (dwStart > cursor + 0.5) drawWallSeg(cursor / L, dwStart / L);
+      cursor = Math.max(cursor, dwEnd);
+    }
+    if (cursor < L - 0.5) drawWallSeg(cursor / L, 1);
+
+    // Render doorway rectangles
+    for (const dw of sortedDw) {
+      const dwStart = Math.max(0, dw.offsetCm);
+      const dwEnd = Math.min(L, dw.offsetCm + dw.widthCm);
+      const dwWidth = dwEnd - dwStart;
+      if (dwWidth < 0.5) continue;
+
+      const tS = dwStart / L, tE = dwEnd / L;
+      const iS = innerAt(tS), iE = innerAt(tE);
+      const oS = outerAt(tS), oE = outerAt(tE);
+
+      const isDwSel = (dw.id === selectedDoorwayId);
+      const dwFill = isDwSel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.06)";
+      const dwStroke = isDwSel ? "rgba(239,68,68,1)" : "rgba(239,68,68,0.8)";
+      const dwStrokeW = isDwSel ? 2 : 1.2;
+
+      const dwD = `M ${iS.x} ${iS.y} L ${iE.x} ${iE.y} L ${oE.x} ${oE.y} L ${oS.x} ${oS.y} Z`;
+      const dwEl = svgEl("path", {
+        d: dwD, fill: dwFill, stroke: dwStroke, "stroke-width": dwStrokeW,
+        cursor: "move", "data-doorway-id": dw.id, "data-wall-edge": edgeIdx,
+        "pointer-events": "auto"
+      });
+      dwEl.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        if (onDoorwayPointerDown) onDoorwayPointerDown(e, dw.id, edgeIdx);
+      });
+      wallsGroup.appendChild(dwEl);
+
+      // Dimension indicators and resize handles for selected doorway
+      if (isDwSel) {
+        const accent = "rgba(122,162,255,1)";
+        const dimOffset = thick + 10;
+        const ox = normal.x * dimOffset;
+        const oy = normal.y * dimOffset;
+        const tick = 6;
+        const wx = normal.x * tick / 2;
+        const wy = normal.y * tick / 2;
+
+        let edgeAngle = Math.atan2(edgeDirY, edgeDirX) * 180 / Math.PI;
+        if (edgeAngle > 90 || edgeAngle < -90) edgeAngle += 180;
+
+        const drawIndicator = (p1, p2, valueCm) => {
+          const mx = (p1.x + p2.x) / 2;
+          const my = (p1.y + p2.y) / 2;
+          wallsGroup.appendChild(svgEl("line", {
+            x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
+            stroke: accent, "stroke-width": 1, "pointer-events": "none"
+          }));
+          wallsGroup.appendChild(svgEl("line", {
+            x1: p1.x - wx, y1: p1.y - wy, x2: p1.x + wx, y2: p1.y + wy,
+            stroke: accent, "stroke-width": 1, "pointer-events": "none"
+          }));
+          wallsGroup.appendChild(svgEl("line", {
+            x1: p2.x - wx, y1: p2.y - wy, x2: p2.x + wx, y2: p2.y + wy,
+            stroke: accent, "stroke-width": 1, "pointer-events": "none"
+          }));
+          addPillLabel(`${Number(valueCm.toFixed(1))} cm`, mx + normal.x * 6, my + normal.y * 6, { parent: wallsGroup, angle: edgeAngle });
+        };
+
+        const edgeStart = { x: A.x + ox, y: A.y + oy };
+        const dwOuterStart = { x: iS.x + ox, y: iS.y + oy };
+        const dwOuterEnd = { x: iE.x + ox, y: iE.y + oy };
+        const edgeEnd = { x: B.x + ox, y: B.y + oy };
+
+        if (dwStart > 1) drawIndicator(edgeStart, dwOuterStart, dwStart);
+        drawIndicator(dwOuterStart, dwOuterEnd, dwWidth);
+        const rightDist = L - dwEnd;
+        if (rightDist > 1) drawIndicator(dwOuterEnd, edgeEnd, rightDist);
+
+        // Resize handles
+        if (onDoorwayResizePointerDown) {
+          const handleR = thick * 0.4;
+          const handleStyle = {
+            fill: "var(--accent, #3b82f6)", stroke: "#fff", "stroke-width": 1.5,
+            "pointer-events": "auto"
+          };
+          const lMid = { x: (iS.x + oS.x) / 2, y: (iS.y + oS.y) / 2 };
+          const rMid = { x: (iE.x + oE.x) / 2, y: (iE.y + oE.y) / 2 };
+
+          const lHandle = svgEl("circle", {
+            ...handleStyle, cx: lMid.x, cy: lMid.y, r: handleR,
+            cursor: "ew-resize", "data-doorway-id": dw.id,
+            "data-wall-edge": edgeIdx, "data-doorway-resize": "start"
+          });
+          lHandle.addEventListener("pointerdown", (e) => {
+            e.stopPropagation();
+            onDoorwayResizePointerDown(e, dw.id, edgeIdx, "start");
+          });
+          wallsGroup.appendChild(lHandle);
+
+          const rHandle = svgEl("circle", {
+            ...handleStyle, cx: rMid.x, cy: rMid.y, r: handleR,
+            cursor: "ew-resize", "data-doorway-id": dw.id,
+            "data-wall-edge": edgeIdx, "data-doorway-resize": "end"
+          });
+          rHandle.addEventListener("pointerdown", (e) => {
+            e.stopPropagation();
+            onDoorwayResizePointerDown(e, dw.id, edgeIdx, "end");
+          });
+          wallsGroup.appendChild(rHandle);
+        }
+      }
+    }
+  }
+  return wallsGroup;
+}
+
+function _renderPlanExclusions(svg, displayExclusions, { selectedExclId, isExportBW, onExclPointerDown, setSelectedExcl, onResizeHandlePointerDown, onInlineEdit, addPillLabel, labelBaseStyle, fmtCm }) {
+  const gEx = svgEl("g");
+  for (const ex of displayExclusions) {
+    const isSel = ex.id === selectedExclId;
+    const common = {
+      fill: isExportBW ? "rgba(0,0,0,0.12)" : (isSel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.06)"),
+      stroke: isExportBW ? "#111111" : (isSel ? "rgba(239,68,68,1)" : "rgba(239,68,68,0.8)"),
+      "stroke-width": isExportBW ? 1.2 : (isSel ? 2 : 1.2),
+      cursor: "move",
+      "data-exid": ex.id
+    };
+    if (isExportBW) {
+      common["stroke-dasharray"] = "6 4";
+    }
+
+    let shapeEl;
+    if (ex.type === "rect") {
+      shapeEl = svgEl("rect", { ...common, x: ex.x, y: ex.y, width: ex.w, height: ex.h });
+    } else if (ex.type === "circle") {
+      shapeEl = svgEl("circle", { ...common, cx: ex.cx, cy: ex.cy, r: ex.r });
+    } else if (ex.type === "freeform" && ex.vertices?.length >= 3) {
+      const pts = ex.vertices.map(v => `${v.x},${v.y}`).join(" ");
+      shapeEl = svgEl("polygon", { ...common, points: pts });
+    } else {
+      const pts = `${ex.p1.x},${ex.p1.y} ${ex.p2.x},${ex.p2.y} ${ex.p3.x},${ex.p3.y}`;
+      shapeEl = svgEl("polygon", { ...common, points: pts });
+    }
+
+    shapeEl.addEventListener("pointerdown", onExclPointerDown);
+    shapeEl.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setSelectedExcl(ex.id);
+    });
+    gEx.appendChild(shapeEl);
+
+    if (isSel && onResizeHandlePointerDown) {
+      const handleRadius = 6;
+      const handleStyle = {
+        fill: "var(--accent, #3b82f6)",
+        stroke: "#fff",
+        "stroke-width": 1.5,
+        cursor: "pointer",
+        "data-exid": ex.id
+      };
+      const addEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
+        let finalAngle = angle;
+        if (finalAngle > 90 || finalAngle < -90) {
+          finalAngle += 180;
+        }
+        const labelGroup = addPillLabel(text, x, y, {
+          anchor,
+          angle: finalAngle,
+          parent: gEx
+        });
+        if (!onInlineEdit) return;
+        const openEdit = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          labelGroup.style.display = "none";
+          const isPosLabel = key === "x" || key === "y";
+          startSvgEdit({
+            svg,
+            x,
+            y,
+            angle: finalAngle,
+            value,
+            textStyle: labelBaseStyle,
+            onCommit: (nextVal) => {
+              labelGroup.style.display = "";
+              onInlineEdit({ id: ex.id, key, value: nextVal });
+            },
+            onCancel: () => {
+              labelGroup.style.display = "";
+              setSelectedExcl(null);
+            },
+            anchor,
+            prefix: isPosLabel ? `${key} ` : ""
+          });
+        };
+        labelGroup.addEventListener("pointerdown", openEdit);
+        labelGroup.addEventListener("click", openEdit);
+      };
+
+      const pad = 10;
+
+      if (ex.type === "rect") {
+        const handles = [
+          { type: "nw", x: ex.x, y: ex.y, cursor: "nwse-resize" },
+          { type: "ne", x: ex.x + ex.w, y: ex.y, cursor: "nesw-resize" },
+          { type: "sw", x: ex.x, y: ex.y + ex.h, cursor: "nesw-resize" },
+          { type: "se", x: ex.x + ex.w, y: ex.y + ex.h, cursor: "nwse-resize" },
+          { type: "n", x: ex.x + ex.w / 2, y: ex.y, cursor: "ns-resize" },
+          { type: "s", x: ex.x + ex.w / 2, y: ex.y + ex.h, cursor: "ns-resize" },
+          { type: "w", x: ex.x, y: ex.y + ex.h / 2, cursor: "ew-resize" },
+          { type: "e", x: ex.x + ex.w, y: ex.y + ex.h / 2, cursor: "ew-resize" }
+        ];
+        handles.forEach(h => {
+          const handle = svgEl("circle", {
+            ...handleStyle,
+            cx: h.x,
+            cy: h.y,
+            r: handleRadius,
+            cursor: h.cursor,
+            "data-resize-handle": h.type
+          });
+          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
+          gEx.appendChild(handle);
+        });
+        addEditableLabel(`${fmtCm(ex.w)} cm`, ex.w, "w", ex.x + ex.w / 2, ex.y - pad, "middle", 0);
+        addEditableLabel(`${fmtCm(ex.h)} cm`, ex.h, "h", ex.x + ex.w + pad, ex.y + ex.h / 2, "middle", 90);
+      } else if (ex.type === "circle") {
+        const handle = svgEl("circle", {
+          ...handleStyle,
+          cx: ex.cx + ex.r,
+          cy: ex.cy,
+          r: handleRadius,
+          cursor: "ew-resize",
+          "data-resize-handle": "r"
+        });
+        handle.addEventListener("pointerdown", onResizeHandlePointerDown);
+        gEx.appendChild(handle);
+        addEditableLabel(`Ø ${fmtCm(ex.r * 2)} cm`, ex.r * 2, "diameter", ex.cx, ex.cy - ex.r - pad);
+      } else if (ex.type === "tri") {
+        const points = [
+          { type: "p1", x: ex.p1.x, y: ex.p1.y },
+          { type: "p2", x: ex.p2.x, y: ex.p2.y },
+          { type: "p3", x: ex.p3.x, y: ex.p3.y }
+        ];
+        points.forEach(p => {
+          const handle = svgEl("circle", {
+            ...handleStyle,
+            cx: p.x,
+            cy: p.y,
+            r: handleRadius,
+            cursor: "move",
+            "data-resize-handle": p.type
+          });
+          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
+          gEx.appendChild(handle);
+        });
+        const sides = [
+          { key: "side-a", p1: ex.p1, p2: ex.p2 },
+          { key: "side-b", p1: ex.p2, p2: ex.p3 },
+          { key: "side-c", p1: ex.p3, p2: ex.p1 }
+        ];
+        sides.forEach(side => {
+          const midX = (side.p1.x + side.p2.x) / 2;
+          const midY = (side.p1.y + side.p2.y) / 2;
+          const dx = side.p2.x - side.p1.x;
+          const dy = side.p2.y - side.p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const offset = 8;
+          const x = midX + nx * offset;
+          const y = midY + ny * offset;
+          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+          addEditableLabel(`${fmtCm(len)} cm`, len, side.key, x, y, "middle", angle);
+        });
+      } else if (ex.type === "freeform" && ex.vertices?.length >= 3) {
+        ex.vertices.forEach((v, i) => {
+          const handle = svgEl("circle", {
+            ...handleStyle,
+            cx: v.x,
+            cy: v.y,
+            r: handleRadius,
+            cursor: "move",
+            "data-resize-handle": `v${i}`
+          });
+          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
+          gEx.appendChild(handle);
+        });
+        for (let i = 0; i < ex.vertices.length; i++) {
+          const p1 = ex.vertices[i];
+          const p2 = ex.vertices[(i + 1) % ex.vertices.length];
+          const midX = (p1.x + p2.x) / 2;
+          const midY = (p1.y + p2.y) / 2;
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const offset = 8;
+          const x = midX + nx * offset;
+          const y = midY + ny * offset;
+          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+          addPillLabel(`${fmtCm(len)} cm`, x, y, { angle, parent: gEx });
+        }
+      }
+    }
+  }
+  svg.appendChild(gEx);
+}
+
 export function renderPlanSvg({
   state,
   selectedExclId,
@@ -1589,7 +1431,7 @@ export function renderPlanSvg({
     if (resizeOverlay) {
       resizeOverlay.classList.add("hidden");
     }
-    closeSvgEdit(false);
+    cancelSvgEdit();
   }
 
   while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -1652,230 +1494,12 @@ export function renderPlanSvg({
   }
 
   // Walls group — appended to svg AFTER tiles so walls draw on top (no tile bleed-through)
-  let wallsGroup = null;
-
-  // Render wall thickness quads from wall entities (not export, not circle rooms)
-  if (!isExportBW && !isCircleRoom(currentRoom) && currentRoom.polygonVertices?.length >= 3) {
-    const verts = currentRoom.polygonVertices;
-    const n = verts.length;
-    const floor = getCurrentFloor(state);
-    const roomWalls = floor ? getWallsForRoom(floor, currentRoom.id) : [];
-
-    // Compute winding sign once for current room's polygon
-    let roomArea2 = 0;
-    for (let k = 0; k < n; k++) {
-      const kn = (k + 1) % n;
-      roomArea2 += verts[k].x * verts[kn].y - verts[kn].x * verts[k].y;
-    }
-    const windingSign = roomArea2 > 0 ? 1 : -1;
-
-    // Centralized wall geometry for doorway direction + extensions
-    const wallGeometry = floor ? computeFloorWallGeometry(floor) : new Map();
-
-    wallsGroup = svgEl("g", {});
-
-    // Deduplicate walls by edge — multiple walls can cover the same room edge
-    // (e.g. two adjacent rooms each owning a wall along the current room's shared edge).
-    // Render one wall quad per edge, aggregating doorways from all walls.
-    const renderedEdges = new Set();
-
-    for (const wall of roomWalls) {
-      const surface = wall.surfaces?.find(s => s.roomId === currentRoom.id);
-      if (!surface) continue;
-      const edgeIdx = surface.edgeIndex;
-      if (edgeIdx == null || edgeIdx < 0 || edgeIdx >= n) continue;
-      if (renderedEdges.has(edgeIdx)) continue;
-      renderedEdges.add(edgeIdx);
-
-      const origA = verts[edgeIdx];
-      const origB = verts[(edgeIdx + 1) % n];
-      const thick = wall.thicknessCm ?? DEFAULT_WALL_THICKNESS_CM;
-      if (thick <= 0) continue;
-
-      const edgeDx = origB.x - origA.x;
-      const edgeDy = origB.y - origA.y;
-      const origL = Math.hypot(edgeDx, edgeDy);
-      if (origL < 1) continue;
-
-      const edgeDirX = edgeDx / origL;
-      const edgeDirY = edgeDy / origL;
-
-      // Outward normal from CURRENT room's polygon (not the wall's owning room)
-      const normal = { x: windingSign * edgeDy / origL, y: -windingSign * edgeDx / origL };
-
-      // Angle-aware corner extensions from centralized wall geometry
-      const wallDesc = wallGeometry.get(wall.id);
-      const roomExt = wallDesc?.extensions.get(currentRoom.id) ?? { extStart: thick, extEnd: thick };
-      const extStart = roomExt.extStart;
-      const extEnd = roomExt.extEnd;
-      const A = { x: origA.x - edgeDirX * extStart, y: origA.y - edgeDirY * extStart };
-      const B = { x: origB.x + edgeDirX * extEnd, y: origB.y + edgeDirY * extEnd };
-      const L = origL + extStart + extEnd;
-      const OA = { x: A.x + normal.x * thick, y: A.y + normal.y * thick };
-      const OB = { x: B.x + normal.x * thick, y: B.y + normal.y * thick };
-
-      const isSel = (edgeIdx === selectedWallEdge);
-      const wallFill = isSel ? "rgba(59,130,246,0.25)" : "rgba(148,163,184,0.2)";
-      const wallStroke = isSel ? "rgba(59,130,246,0.5)" : "rgba(148,163,184,0.35)";
-
-      // Helpers for parametric positions along extended edge
-      const eDx = B.x - A.x, eDy = B.y - A.y;
-      const innerAt = (t) => ({ x: A.x + t * eDx, y: A.y + t * eDy });
-      const outerAt = (t) => ({ x: OA.x + t * (OB.x - OA.x), y: OA.y + t * (OB.y - OA.y) });
-
-      // Aggregate doorways from ALL walls that affect this edge
-      const allDoorways = [];
-      for (const w of roomWalls) {
-        const wSurf = w.surfaces?.find(s => s.roomId === currentRoom.id && s.edgeIndex === edgeIdx);
-        if (!wSurf) continue;
-        const wDesc = wallGeometry.get(w.id);
-        const dws = wDesc
-          ? getDoorwaysInEdgeSpace(wDesc, currentRoom, edgeIdx)
-          : (w.doorways || []);
-        allDoorways.push(...dws);
-      }
-      const sortedDw = [...allDoorways].sort((a, b) => a.offsetCm - b.offsetCm);
-
-      const drawWallSeg = (tStart, tEnd) => {
-        const iC = innerAt(tStart), iD = innerAt(tEnd);
-        const oC = outerAt(tStart), oD = outerAt(tEnd);
-        const segD = `M ${iC.x} ${iC.y} L ${iD.x} ${iD.y} L ${oD.x} ${oD.y} L ${oC.x} ${oC.y} Z`;
-        const wallSeg = svgEl("path", {
-          d: segD, fill: wallFill, stroke: wallStroke, "stroke-width": 0.5,
-          "pointer-events": "auto", "data-wall-edge": edgeIdx, cursor: "pointer"
-        });
-        wallSeg.addEventListener("pointerenter", () => {
-          if (edgeIdx !== selectedWallEdge) wallSeg.setAttribute("fill", "rgba(59,130,246,0.15)");
-        });
-        wallSeg.addEventListener("pointerleave", () => {
-          if (edgeIdx !== selectedWallEdge) wallSeg.setAttribute("fill", wallFill);
-        });
-        wallSeg.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (onWallClick) onWallClick(edgeIdx);
-        });
-        wallSeg.addEventListener("dblclick", (e) => {
-          e.stopPropagation();
-          if (onWallDoubleClick) onWallDoubleClick(edgeIdx);
-        });
-        wallsGroup.appendChild(wallSeg);
-      };
-
-      let cursor = 0;
-      for (const dw of sortedDw) {
-        const dwStart = Math.max(0, dw.offsetCm);
-        const dwEnd = Math.min(L, dw.offsetCm + dw.widthCm);
-        if (dwEnd <= dwStart) continue; // doorway entirely outside [0, L]
-        if (dwStart > cursor + 0.5) drawWallSeg(cursor / L, dwStart / L);
-        cursor = Math.max(cursor, dwEnd);
-      }
-      if (cursor < L - 0.5) drawWallSeg(cursor / L, 1);
-
-      // Render doorway rectangles
-      for (const dw of sortedDw) {
-        const dwStart = Math.max(0, dw.offsetCm);
-        const dwEnd = Math.min(L, dw.offsetCm + dw.widthCm);
-        const dwWidth = dwEnd - dwStart;
-        if (dwWidth < 0.5) continue;
-
-        const tS = dwStart / L, tE = dwEnd / L;
-        const iS = innerAt(tS), iE = innerAt(tE);
-        const oS = outerAt(tS), oE = outerAt(tE);
-
-        const isDwSel = (dw.id === selectedDoorwayId);
-        const dwFill = isDwSel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.06)";
-        const dwStroke = isDwSel ? "rgba(239,68,68,1)" : "rgba(239,68,68,0.8)";
-        const dwStrokeW = isDwSel ? 2 : 1.2;
-
-        const dwD = `M ${iS.x} ${iS.y} L ${iE.x} ${iE.y} L ${oE.x} ${oE.y} L ${oS.x} ${oS.y} Z`;
-        const dwEl = svgEl("path", {
-          d: dwD, fill: dwFill, stroke: dwStroke, "stroke-width": dwStrokeW,
-          cursor: "move", "data-doorway-id": dw.id, "data-wall-edge": edgeIdx,
-          "pointer-events": "auto"
-        });
-        dwEl.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          if (onDoorwayPointerDown) onDoorwayPointerDown(e, dw.id, edgeIdx);
-        });
-        wallsGroup.appendChild(dwEl);
-
-        // Dimension indicators and resize handles for selected doorway
-        if (isDwSel) {
-          const accent = "rgba(122,162,255,1)";
-          const dimOffset = thick + 10;
-          const ox = normal.x * dimOffset;
-          const oy = normal.y * dimOffset;
-          const tick = 6;
-          const wx = normal.x * tick / 2;
-          const wy = normal.y * tick / 2;
-
-          let edgeAngle = Math.atan2(edgeDirY, edgeDirX) * 180 / Math.PI;
-          if (edgeAngle > 90 || edgeAngle < -90) edgeAngle += 180;
-
-          const drawIndicator = (p1, p2, valueCm) => {
-            const mx = (p1.x + p2.x) / 2;
-            const my = (p1.y + p2.y) / 2;
-            wallsGroup.appendChild(svgEl("line", {
-              x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
-              stroke: accent, "stroke-width": 1, "pointer-events": "none"
-            }));
-            wallsGroup.appendChild(svgEl("line", {
-              x1: p1.x - wx, y1: p1.y - wy, x2: p1.x + wx, y2: p1.y + wy,
-              stroke: accent, "stroke-width": 1, "pointer-events": "none"
-            }));
-            wallsGroup.appendChild(svgEl("line", {
-              x1: p2.x - wx, y1: p2.y - wy, x2: p2.x + wx, y2: p2.y + wy,
-              stroke: accent, "stroke-width": 1, "pointer-events": "none"
-            }));
-            addPillLabel(`${Number(valueCm.toFixed(1))} cm`, mx + normal.x * 6, my + normal.y * 6, { parent: wallsGroup, angle: edgeAngle });
-          };
-
-          const edgeStart = { x: A.x + ox, y: A.y + oy };
-          const dwOuterStart = { x: iS.x + ox, y: iS.y + oy };
-          const dwOuterEnd = { x: iE.x + ox, y: iE.y + oy };
-          const edgeEnd = { x: B.x + ox, y: B.y + oy };
-
-          if (dwStart > 1) drawIndicator(edgeStart, dwOuterStart, dwStart);
-          drawIndicator(dwOuterStart, dwOuterEnd, dwWidth);
-          const rightDist = L - dwEnd;
-          if (rightDist > 1) drawIndicator(dwOuterEnd, edgeEnd, rightDist);
-
-          // Resize handles
-          if (onDoorwayResizePointerDown) {
-            const handleR = thick * 0.4;
-            const handleStyle = {
-              fill: "var(--accent, #3b82f6)", stroke: "#fff", "stroke-width": 1.5,
-              "pointer-events": "auto"
-            };
-            const lMid = { x: (iS.x + oS.x) / 2, y: (iS.y + oS.y) / 2 };
-            const rMid = { x: (iE.x + oE.x) / 2, y: (iE.y + oE.y) / 2 };
-
-            const lHandle = svgEl("circle", {
-              ...handleStyle, cx: lMid.x, cy: lMid.y, r: handleR,
-              cursor: "ew-resize", "data-doorway-id": dw.id,
-              "data-wall-edge": edgeIdx, "data-doorway-resize": "start"
-            });
-            lHandle.addEventListener("pointerdown", (e) => {
-              e.stopPropagation();
-              onDoorwayResizePointerDown(e, dw.id, edgeIdx, "start");
-            });
-            wallsGroup.appendChild(lHandle);
-
-            const rHandle = svgEl("circle", {
-              ...handleStyle, cx: rMid.x, cy: rMid.y, r: handleR,
-              cursor: "ew-resize", "data-doorway-id": dw.id,
-              "data-wall-edge": edgeIdx, "data-doorway-resize": "end"
-            });
-            rHandle.addEventListener("pointerdown", (e) => {
-              e.stopPropagation();
-              onDoorwayResizePointerDown(e, dw.id, edgeIdx, "end");
-            });
-            wallsGroup.appendChild(rHandle);
-          }
-        }
-      }
-    }
-  }
+  const wallsGroup = _renderPlanWalls(currentRoom, state, {
+    isExportBW, selectedWallEdge, selectedDoorwayId,
+    onWallClick, onWallDoubleClick,
+    onDoorwayPointerDown, onDoorwayResizePointerDown,
+    addPillLabel
+  });
 
   const suppressDetails = Boolean(selectedExclId);
 
@@ -2272,303 +1896,13 @@ if (showNeeds && m?.data?.debug?.tileUsage?.length && previewTiles?.length) {
   }
 
   // exclusion shapes
-  const gEx = svgEl("g");
-  for (const ex of displayExclusions) {
-    const isSel = ex.id === selectedExclId;
-    // Match section styling pattern: selected has higher opacity, unselected is more subtle
-    const common = {
-      fill: isExportBW ? "rgba(0,0,0,0.12)" : (isSel ? "rgba(239,68,68,0.15)" : "rgba(239,68,68,0.06)"),
-      stroke: isExportBW ? "#111111" : (isSel ? "rgba(239,68,68,1)" : "rgba(239,68,68,0.8)"),
-      "stroke-width": isExportBW ? 1.2 : (isSel ? 2 : 1.2),
-      cursor: "move",
-      "data-exid": ex.id
-    };
-    if (isExportBW) {
-      common["stroke-dasharray"] = "6 4";
-    }
+  _renderPlanExclusions(svg, displayExclusions, {
+    selectedExclId, isExportBW, onExclPointerDown, setSelectedExcl,
+    onResizeHandlePointerDown, onInlineEdit, addPillLabel, labelBaseStyle, fmtCm
+  });
 
-    let shapeEl;
-    if (ex.type === "rect") {
-      shapeEl = svgEl("rect", { ...common, x: ex.x, y: ex.y, width: ex.w, height: ex.h });
-    } else if (ex.type === "circle") {
-      shapeEl = svgEl("circle", { ...common, cx: ex.cx, cy: ex.cy, r: ex.r });
-    } else if (ex.type === "freeform" && ex.vertices?.length >= 3) {
-      const pts = ex.vertices.map(v => `${v.x},${v.y}`).join(" ");
-      shapeEl = svgEl("polygon", { ...common, points: pts });
-    } else {
-      const pts = `${ex.p1.x},${ex.p1.y} ${ex.p2.x},${ex.p2.y} ${ex.p3.x},${ex.p3.y}`;
-      shapeEl = svgEl("polygon", { ...common, points: pts });
-    }
-
-    shapeEl.addEventListener("pointerdown", onExclPointerDown);
-    shapeEl.addEventListener("click", (e) => {
-      e.stopPropagation();
-      setSelectedExcl(ex.id);
-    });
-    gEx.appendChild(shapeEl);
-
-    // Add resize handles for selected exclusion
-    if (isSel && onResizeHandlePointerDown) {
-      const handleRadius = 6;
-      const handleStyle = {
-        fill: "var(--accent, #3b82f6)",
-        stroke: "#fff",
-        "stroke-width": 1.5,
-        cursor: "pointer",
-        "data-exid": ex.id
-      };
-      const addEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
-        let finalAngle = angle;
-        if (finalAngle > 90 || finalAngle < -90) {
-          finalAngle += 180;
-        }
-        const labelGroup = addPillLabel(text, x, y, {
-          anchor,
-          angle: finalAngle,
-          parent: gEx
-        });
-        if (!onInlineEdit) return;
-        const openEdit = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          labelGroup.style.display = "none";
-          const isPosLabel = key === "x" || key === "y";
-          startSvgEdit({
-            svg,
-            x,
-            y,
-            angle: finalAngle,
-            value,
-            textStyle: labelBaseStyle,
-            onCommit: (nextVal) => {
-              labelGroup.style.display = "";
-              onInlineEdit({ id: ex.id, key, value: nextVal });
-            },
-            onCancel: () => {
-              labelGroup.style.display = "";
-              setSelectedExcl(null);
-            },
-            anchor,
-            prefix: isPosLabel ? `${key} ` : ""
-          });
-        };
-        labelGroup.addEventListener("pointerdown", openEdit);
-        labelGroup.addEventListener("click", openEdit);
-      };
-
-      const pad = 10;
-
-      if (ex.type === "rect") {
-        // Corner handles (nw, ne, sw, se) and edge handles (n, s, e, w)
-        const handles = [
-          { type: "nw", x: ex.x, y: ex.y, cursor: "nwse-resize" },
-          { type: "ne", x: ex.x + ex.w, y: ex.y, cursor: "nesw-resize" },
-          { type: "sw", x: ex.x, y: ex.y + ex.h, cursor: "nesw-resize" },
-          { type: "se", x: ex.x + ex.w, y: ex.y + ex.h, cursor: "nwse-resize" },
-          { type: "n", x: ex.x + ex.w / 2, y: ex.y, cursor: "ns-resize" },
-          { type: "s", x: ex.x + ex.w / 2, y: ex.y + ex.h, cursor: "ns-resize" },
-          { type: "w", x: ex.x, y: ex.y + ex.h / 2, cursor: "ew-resize" },
-          { type: "e", x: ex.x + ex.w, y: ex.y + ex.h / 2, cursor: "ew-resize" }
-        ];
-
-        handles.forEach(h => {
-          const handle = svgEl("circle", {
-            ...handleStyle,
-            cx: h.x,
-            cy: h.y,
-            r: handleRadius,
-            cursor: h.cursor,
-            "data-resize-handle": h.type
-          });
-          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
-          gEx.appendChild(handle);
-        });
-
-        addEditableLabel(`${fmtCm(ex.w)} cm`, ex.w, "w", ex.x + ex.w / 2, ex.y - pad, "middle", 0);
-        addEditableLabel(`${fmtCm(ex.h)} cm`, ex.h, "h", ex.x + ex.w + pad, ex.y + ex.h / 2, "middle", 90);
-      } else if (ex.type === "circle") {
-        // Single handle on the edge for radius
-        const handle = svgEl("circle", {
-          ...handleStyle,
-          cx: ex.cx + ex.r,
-          cy: ex.cy,
-          r: handleRadius,
-          cursor: "ew-resize",
-          "data-resize-handle": "r"
-        });
-        handle.addEventListener("pointerdown", onResizeHandlePointerDown);
-        gEx.appendChild(handle);
-
-        addEditableLabel(`Ø ${fmtCm(ex.r * 2)} cm`, ex.r * 2, "diameter", ex.cx, ex.cy - ex.r - pad);
-      } else if (ex.type === "tri") {
-        // Handles at each vertex
-        const points = [
-          { type: "p1", x: ex.p1.x, y: ex.p1.y },
-          { type: "p2", x: ex.p2.x, y: ex.p2.y },
-          { type: "p3", x: ex.p3.x, y: ex.p3.y }
-        ];
-
-        points.forEach(p => {
-          const handle = svgEl("circle", {
-            ...handleStyle,
-            cx: p.x,
-            cy: p.y,
-            r: handleRadius,
-            cursor: "move",
-            "data-resize-handle": p.type
-          });
-          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
-          gEx.appendChild(handle);
-        });
-
-        const sides = [
-          { key: "side-a", p1: ex.p1, p2: ex.p2 },
-          { key: "side-b", p1: ex.p2, p2: ex.p3 },
-          { key: "side-c", p1: ex.p3, p2: ex.p1 }
-        ];
-
-        sides.forEach(side => {
-          const midX = (side.p1.x + side.p2.x) / 2;
-          const midY = (side.p1.y + side.p2.y) / 2;
-          const dx = side.p2.x - side.p1.x;
-          const dy = side.p2.y - side.p1.y;
-          const len = Math.sqrt(dx * dx + dy * dy) || 1;
-          const nx = -dy / len;
-          const ny = dx / len;
-          const offset = 8;
-          const x = midX + nx * offset;
-          const y = midY + ny * offset;
-          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-          addEditableLabel(`${fmtCm(len)} cm`, len, side.key, x, y, "middle", angle);
-        });
-      } else if (ex.type === "freeform" && ex.vertices?.length >= 3) {
-        // Vertex handles for freeform exclusions
-        ex.vertices.forEach((v, i) => {
-          const handle = svgEl("circle", {
-            ...handleStyle,
-            cx: v.x,
-            cy: v.y,
-            r: handleRadius,
-            cursor: "move",
-            "data-resize-handle": `v${i}`
-          });
-          handle.addEventListener("pointerdown", onResizeHandlePointerDown);
-          gEx.appendChild(handle);
-        });
-
-        // Edge length labels
-        for (let i = 0; i < ex.vertices.length; i++) {
-          const p1 = ex.vertices[i];
-          const p2 = ex.vertices[(i + 1) % ex.vertices.length];
-          const midX = (p1.x + p2.x) / 2;
-          const midY = (p1.y + p2.y) / 2;
-          const dx = p2.x - p1.x;
-          const dy = p2.y - p1.y;
-          const len = Math.sqrt(dx * dx + dy * dy) || 1;
-          const nx = -dy / len;
-          const ny = dx / len;
-          const offset = 8;
-          const x = midX + nx * offset;
-          const y = midY + ny * offset;
-          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
-          addPillLabel(`${fmtCm(len)} cm`, x, y, { angle, parent: gEx });
-        }
-      }
-    }
-  }
-  svg.appendChild(gEx);
-
-  // 3D object footprints (green)
-  const objects3d = currentRoom.objects3d || [];
-  if (objects3d.length > 0) {
-    const gObj = svgEl("g");
-    for (const obj of objects3d) {
-      const isSel = obj.id === selectedObj3dId;
-      const common = {
-        fill: isSel ? "rgba(34,197,94,0.15)" : "rgba(34,197,94,0.06)",
-        stroke: isSel ? "rgba(34,197,94,1)" : "rgba(34,197,94,0.8)",
-        "stroke-width": isSel ? 2 : 1.2,
-        cursor: "move",
-        "data-objid": obj.id
-      };
-
-      let shapeEl;
-      if (obj.type === "rect") {
-        shapeEl = svgEl("rect", { ...common, x: obj.x, y: obj.y, width: obj.w, height: obj.h });
-      } else if (obj.type === "freeform" && obj.vertices?.length >= 3) {
-        const pts = obj.vertices.map(v => `${v.x},${v.y}`).join(" ");
-        shapeEl = svgEl("polygon", { ...common, points: pts });
-      } else if (obj.type === "tri") {
-        const pts = `${obj.p1.x},${obj.p1.y} ${obj.p2.x},${obj.p2.y} ${obj.p3.x},${obj.p3.y}`;
-        shapeEl = svgEl("polygon", { ...common, points: pts });
-      } else {
-        continue;
-      }
-
-      if (onObj3dPointerDown) {
-        shapeEl.addEventListener("pointerdown", onObj3dPointerDown);
-      }
-      if (setSelectedObj3d) {
-        shapeEl.addEventListener("click", (e) => {
-          e.stopPropagation();
-          setSelectedObj3d(obj.id);
-        });
-      }
-      gObj.appendChild(shapeEl);
-
-      // Resize handles for selected object
-      if (isSel && onObj3dResizeHandlePointerDown) {
-        const handleRadius = 6;
-        const handleStyle = {
-          fill: "#22c55e",
-          stroke: "#fff",
-          "stroke-width": 1.5,
-          cursor: "pointer",
-          "data-objid": obj.id
-        };
-
-        if (obj.type === "rect") {
-          const handles = [
-            { type: "nw", x: obj.x, y: obj.y, cursor: "nwse-resize" },
-            { type: "ne", x: obj.x + obj.w, y: obj.y, cursor: "nesw-resize" },
-            { type: "sw", x: obj.x, y: obj.y + obj.h, cursor: "nesw-resize" },
-            { type: "se", x: obj.x + obj.w, y: obj.y + obj.h, cursor: "nwse-resize" },
-            { type: "n", x: obj.x + obj.w / 2, y: obj.y, cursor: "ns-resize" },
-            { type: "s", x: obj.x + obj.w / 2, y: obj.y + obj.h, cursor: "ns-resize" },
-            { type: "w", x: obj.x, y: obj.y + obj.h / 2, cursor: "ew-resize" },
-            { type: "e", x: obj.x + obj.w, y: obj.y + obj.h / 2, cursor: "ew-resize" }
-          ];
-          handles.forEach(h => {
-            const handle = svgEl("circle", {
-              ...handleStyle, cx: h.x, cy: h.y, r: handleRadius,
-              cursor: h.cursor, "data-resize-handle": h.type
-            });
-            handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
-            gObj.appendChild(handle);
-          });
-        } else if (obj.type === "tri") {
-          [{ type: "p1", ...obj.p1 }, { type: "p2", ...obj.p2 }, { type: "p3", ...obj.p3 }].forEach(p => {
-            const handle = svgEl("circle", {
-              ...handleStyle, cx: p.x, cy: p.y, r: handleRadius,
-              cursor: "move", "data-resize-handle": p.type
-            });
-            handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
-            gObj.appendChild(handle);
-          });
-        } else if (obj.type === "freeform" && obj.vertices?.length >= 3) {
-          obj.vertices.forEach((v, i) => {
-            const handle = svgEl("circle", {
-              ...handleStyle, cx: v.x, cy: v.y, r: handleRadius,
-              cursor: "move", "data-resize-handle": `v${i}`
-            });
-            handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
-            gObj.appendChild(handle);
-          });
-        }
-      }
-    }
-    svg.appendChild(gObj);
-  }
+  // 3D object footprints
+  _renderPlanObjects3d(svg, currentRoom, { selectedObj3dId, onObj3dPointerDown, setSelectedObj3d, onObj3dResizeHandlePointerDown });
 
   // errors overlay
   if (lastUnionError) {
@@ -2664,294 +1998,510 @@ if (showNeeds && m?.data?.debug?.tileUsage?.length && previewTiles?.length) {
     }
   }
 }
-export function renderCommercialTab(state) {
-  const roomsListEl = document.getElementById("commercialRoomsList");
-  const materialsListEl = document.getElementById("commercialMaterialsList");
-  if (!roomsListEl || !materialsListEl) return;
 
-  const proj = computeProjectTotals(state);
+import { renderCommercialTab, renderExportTab } from "./render-commercial.js";
+export { renderCommercialTab, renderExportTab };
 
-  // 1. Render Rooms Table
-  roomsListEl.replaceChildren();
-  const roomsTable = document.createElement("table");
-  roomsTable.className = "commercial-table";
-  const roomsThead = document.createElement("thead");
-  const roomsHeadRow = document.createElement("tr");
-  const roomsHeaders = [
-    { label: t("tabs.floor") },
-    { label: t("tabs.room") },
-    { label: t("tile.reference") },
-    { label: t("metrics.netArea"), align: "right" },
-    { label: t("metrics.totalTiles"), align: "right" },
-    { label: t("metrics.price"), align: "right" }
-  ];
-  roomsHeaders.forEach(({ label, align }) => {
-    const th = document.createElement("th");
-    th.textContent = label;
-    if (align) th.style.textAlign = align;
-    roomsHeadRow.appendChild(th);
+
+function _renderFloorRoom(svg, room, floor, opts) {
+  const {
+    state,
+    selectedRoomId,
+    onRoomClick,
+    onRoomDoubleClick,
+    onRoomPointerDown,
+    onRoomResizePointerDown,
+    onRoomInlineEdit,
+    onVertexPointerDown,
+    onRoomNameEdit,
+    onPolygonEdgeEdit
+  } = opts;
+
+  const pos = room.floorPosition || { x: 0, y: 0 };
+  const roomGroup = svgEl("g", {
+    transform: `translate(${pos.x}, ${pos.y})`,
+    "data-roomid": room.id,
+    cursor: "pointer"
   });
-  roomsThead.appendChild(roomsHeadRow);
-  roomsTable.appendChild(roomsThead);
-  const roomsTbody = document.createElement("tbody");
-  for (const r of proj.rooms) {
-    const tr = document.createElement("tr");
-    const floorTd = document.createElement("td");
-    floorTd.className = "subtle";
-    floorTd.textContent = r.floorName || "";
-    const roomTd = document.createElement("td");
-    roomTd.className = "room-name";
-    roomTd.textContent = r.name || "";
-    const refTd = document.createElement("td");
-    refTd.className = "material-ref";
-    refTd.textContent = r.reference || "-";
-    const areaTd = document.createElement("td");
-    areaTd.style.textAlign = "right";
-    areaTd.textContent = `${r.netAreaM2.toFixed(2)} m²`;
-    const tilesTd = document.createElement("td");
-    tilesTd.style.textAlign = "right";
-    tilesTd.textContent = String(r.totalTiles);
-    const costTd = document.createElement("td");
-    costTd.style.textAlign = "right";
-    costTd.textContent = `${r.totalCost.toFixed(2)} €`;
-    tr.append(floorTd, roomTd, refTd, areaTd, tilesTd, costTd);
-    roomsTbody.appendChild(tr);
-  }
-  roomsTable.appendChild(roomsTbody);
-  roomsListEl.appendChild(roomsTable);
 
-  // 2. Render Consolidated Materials Table
-  materialsListEl.replaceChildren();
-  const matsTable = document.createElement("table");
-  matsTable.className = "commercial-table";
-  const matsThead = document.createElement("thead");
-  const matsHeadRow = document.createElement("tr");
-  const matsHeaders = [
-    { label: t("tile.reference") },
-    { label: t("commercial.totalM2"), align: "right" },
-    { label: t("commercial.totalTiles"), align: "right" },
-    { label: t("commercial.totalPacks"), align: "right" },
-    { label: t("commercial.packsFloor"), align: "right" },
-    { label: t("commercial.packsSkirting"), align: "right" },
-    { label: t("commercial.amountOverride"), align: "right" },
-    { label: t("commercial.pricePerM2"), align: "right" },
-    { label: t("commercial.pricePerPack"), align: "right" },
-    { label: t("commercial.packSize"), align: "right" },
-    { label: t("commercial.totalCost"), align: "right" }
-  ];
-  matsHeaders.forEach(({ label, align }) => {
-    const th = document.createElement("th");
-    th.textContent = label;
-    if (align) th.style.textAlign = align;
-    matsHeadRow.appendChild(th);
-  });
-  matsThead.appendChild(matsHeadRow);
-  matsTable.appendChild(matsThead);
-  const matsTbody = document.createElement("tbody");
-  for (const m of proj.materials) {
-    const ref = m.reference || "";
-    const pricePerPack = (m.pricePerM2 * m.packM2).toFixed(2);
-    const tr = document.createElement("tr");
-    const refTd = document.createElement("td");
-    refTd.className = "material-ref";
-    refTd.textContent = ref || t("commercial.defaultMaterial");
-    const areaTd = document.createElement("td");
-    areaTd.style.textAlign = "right";
-    areaTd.textContent = `${m.netAreaM2.toFixed(2)} m²`;
-    const tilesTd = document.createElement("td");
-    tilesTd.style.textAlign = "right";
-    tilesTd.textContent = String(m.totalTiles);
-    const packsTd = document.createElement("td");
-    packsTd.style.textAlign = "right";
-    const packsStrong = document.createElement("strong");
-    packsStrong.textContent = String(m.totalPacks || 0);
-    packsTd.appendChild(packsStrong);
-    const floorPacksTd = document.createElement("td");
-    floorPacksTd.style.textAlign = "right";
-    floorPacksTd.textContent = String(m.floorPacks || 0);
-    const skirtingPacksTd = document.createElement("td");
-    skirtingPacksTd.style.textAlign = "right";
-    skirtingPacksTd.textContent = String(m.skirtingPacks || 0);
-    const extraTd = document.createElement("td");
-    extraTd.style.textAlign = "right";
-    const extraInput = document.createElement("input");
-    extraInput.type = "number";
-    extraInput.step = "1";
-    extraInput.className = "commercial-edit";
-    extraInput.dataset.ref = ref;
-    extraInput.dataset.prop = "extraPacks";
-    extraInput.value = String(m.extraPacks);
-    extraInput.style.width = "40px";
-    extraTd.appendChild(extraInput);
-    const priceM2Td = document.createElement("td");
-    priceM2Td.style.textAlign = "right";
-    const priceM2Input = document.createElement("input");
-    priceM2Input.type = "number";
-    priceM2Input.step = "0.01";
-    priceM2Input.className = "commercial-edit";
-    priceM2Input.dataset.ref = ref;
-    priceM2Input.dataset.prop = "pricePerM2";
-    priceM2Input.value = m.pricePerM2.toFixed(2);
-    priceM2Input.style.width = "60px";
-    const priceM2Unit = document.createElement("span");
-    priceM2Unit.textContent = " €";
-    priceM2Td.append(priceM2Input, priceM2Unit);
-    const pricePackTd = document.createElement("td");
-    pricePackTd.style.textAlign = "right";
-    const pricePackInput = document.createElement("input");
-    pricePackInput.type = "number";
-    pricePackInput.step = "0.01";
-    pricePackInput.className = "commercial-edit";
-    pricePackInput.dataset.ref = ref;
-    pricePackInput.dataset.prop = "pricePerPack";
-    pricePackInput.value = pricePerPack;
-    pricePackInput.style.width = "60px";
-    const pricePackUnit = document.createElement("span");
-    pricePackUnit.textContent = " €";
-    pricePackTd.append(pricePackInput, pricePackUnit);
-    const packSizeTd = document.createElement("td");
-    packSizeTd.style.textAlign = "right";
-    const packSizeInput = document.createElement("input");
-    packSizeInput.type = "number";
-    packSizeInput.step = "0.01";
-    packSizeInput.className = "commercial-edit";
-    packSizeInput.dataset.ref = ref;
-    packSizeInput.dataset.prop = "packM2";
-    packSizeInput.value = String(m.packM2);
-    const packSizeUnit = document.createElement("span");
-    packSizeUnit.textContent = " m²";
-    packSizeTd.append(packSizeInput, packSizeUnit);
-    const costTd = document.createElement("td");
-    costTd.style.textAlign = "right";
-    const costStrong = document.createElement("strong");
-    costStrong.textContent = `${m.adjustedCost.toFixed(2)} €`;
-    costTd.appendChild(costStrong);
-    tr.append(
-      refTd,
-      areaTd,
-      tilesTd,
-      packsTd,
-      floorPacksTd,
-      skirtingPacksTd,
-      extraTd,
-      priceM2Td,
-      pricePackTd,
-      packSizeTd,
-      costTd
-    );
-    matsTbody.appendChild(tr);
-  }
-  const totalRow = document.createElement("tr");
-  totalRow.style.borderTop = "2px solid var(--line2)";
-  totalRow.style.fontWeight = "bold";
-  const totalLabel = document.createElement("td");
-  totalLabel.textContent = t("commercial.grandTotal");
-  const totalArea = document.createElement("td");
-  totalArea.style.textAlign = "right";
-  totalArea.textContent = `${proj.totalNetAreaM2.toFixed(2)} m²`;
-  const totalTiles = document.createElement("td");
-  totalTiles.style.textAlign = "right";
-  totalTiles.textContent = String(proj.totalTiles);
-  const totalPacks = document.createElement("td");
-  totalPacks.style.textAlign = "right";
-  totalPacks.textContent = String(proj.totalPacks);
-  const totalFloor = document.createElement("td");
-  totalFloor.style.textAlign = "right";
-  totalFloor.textContent = "–";
-  const totalSkirting = document.createElement("td");
-  totalSkirting.style.textAlign = "right";
-  totalSkirting.textContent = "–";
-  const totalSpacer = document.createElement("td");
-  totalSpacer.colSpan = 4;
-  const totalCost = document.createElement("td");
-  totalCost.style.textAlign = "right";
-  totalCost.style.color = "var(--accent)";
-  totalCost.textContent = `${proj.totalCost.toFixed(2)} €`;
-  totalRow.append(
-    totalLabel,
-    totalArea,
-    totalTiles,
-    totalPacks,
-    totalFloor,
-    totalSkirting,
-    totalSpacer,
-    totalCost
-  );
-  matsTbody.appendChild(totalRow);
-  matsTable.appendChild(matsTbody);
-  materialsListEl.appendChild(matsTable);
-}
+  const isSelected = room.id === selectedRoomId;
 
-export function renderExportTab(state, selection = null) {
-  const listEl = document.getElementById("exportRoomsList");
-  if (!listEl) return;
-
-  listEl.replaceChildren();
-
-  const floors = state.floors || [];
-  const roomCount = floors.reduce((sum, floor) => sum + (floor.rooms?.length || 0), 0);
-  const btnRoomsPdf = document.getElementById("btnExportRoomsPdf");
-  const btnCommercialPdf = document.getElementById("btnExportCommercialPdf");
-  const btnCommercialXlsx = document.getElementById("btnExportCommercialXlsx");
-
-  if (btnRoomsPdf) btnRoomsPdf.disabled = roomCount === 0;
-  if (btnCommercialPdf) btnCommercialPdf.disabled = roomCount === 0;
-  if (btnCommercialXlsx) btnCommercialXlsx.disabled = roomCount === 0;
-
-  if (!floors.length || roomCount === 0) {
-    const empty = document.createElement("div");
-    empty.className = "subtle";
-    empty.textContent = t("export.noRoomsSelected");
-    listEl.appendChild(empty);
-    return;
+  // Get room polygon for rendering (in room-local coordinates)
+  // The group transform handles floor positioning
+  if (isCircleRoom(room)) {
+    const { cx, cy, rx, ry } = room.circle;
+    roomGroup.appendChild(svgEl("ellipse", {
+      cx, cy, rx, ry,
+      fill: isSelected ? "rgba(59, 130, 246, 0.25)" : "rgba(100, 150, 200, 0.15)",
+      stroke: isSelected ? "#3b82f6" : "rgba(200, 220, 255, 0.5)",
+      "stroke-width": isSelected ? 3 : 2
+    }));
   }
 
-  const hasSelection = selection instanceof Set;
+  const roomPoly = roomPolygon(room);
+  if (!isCircleRoom(room) && roomPoly && roomPoly.length > 0) {
+    // Convert polygon to path
+    const pathD = multiPolygonToPathD(roomPoly);
 
-  for (const floor of floors) {
-    if (!floor.rooms || floor.rooms.length === 0) continue;
+    // Room fill with clear visibility
+    roomGroup.appendChild(svgEl("path", {
+      d: pathD,
+      fill: isSelected ? "rgba(59, 130, 246, 0.25)" : "rgba(100, 150, 200, 0.15)",
+      stroke: isSelected ? "#3b82f6" : "rgba(200, 220, 255, 0.5)",
+      "stroke-width": isSelected ? 3 : 2
+    }));
 
-    const group = document.createElement("div");
-    group.className = "export-room-group";
+    // Render tiles preview if enabled and room has tile config
+    // Use effective settings (from origin room if in pattern group)
+    const effectiveSettings = getEffectiveTileSettings(room, floor);
+    const effectiveTile = effectiveSettings.tile;
+    if (state.view?.showFloorTiles && effectiveTile?.widthCm > 0 && effectiveTile?.heightCm > 0) {
+      try {
+        const tileResult = computeSurfaceTiles(
+          { ...state, selectedRoomId: room.id },
+          room,
+          floor,
+          {
+            exclusions: getAllFloorExclusions(room),
+            includeDoorwayPatches: true,
+            effectiveSettings,
+            originOverride: computePatternGroupOrigin(room, floor),
+            isRemovalMode: false,
+          }
+        );
+        if (tileResult.error) {
+          console.warn(`Floor tiles error for room ${room.name || room.id}:`, tileResult.error);
+        }
 
-    const title = document.createElement("div");
-    title.className = "export-room-group-title";
-    title.textContent = floor.name || t("tabs.floor");
-    group.appendChild(title);
+        if (tileResult.tiles.length > 0) {
+          // Create a group for tiles
+          const tilesGroup = svgEl("g", { opacity: 0.8 });
 
-    for (const room of floor.rooms) {
-      const row = document.createElement("div");
-      row.className = "export-room-item";
+          for (const tile of tileResult.tiles.slice(0, 1000)) { // Limit tiles for performance
+            if (!tile.d) continue;
+            tilesGroup.appendChild(svgEl("path", {
+              d: tile.d,
+              fill: "rgba(100, 116, 139, 0.5)",
+              stroke: tileResult.groutColor,
+              "stroke-width": effectiveSettings.grout?.widthCm || 0.2
+            }));
+          }
 
-      const labelWrap = document.createElement("div");
-      labelWrap.className = "export-room-label";
-
-      const name = document.createElement("div");
-      name.className = "export-room-name";
-      name.textContent = room.name || t("tabs.room");
-
-      const meta = document.createElement("div");
-      meta.className = "export-room-meta";
-      const bounds = getRoomBounds(room);
-      if (bounds.width > 0 && bounds.height > 0) {
-        meta.textContent = `${Math.round(bounds.width)} x ${Math.round(bounds.height)} cm`;
-      } else {
-        meta.textContent = "–";
+          roomGroup.appendChild(tilesGroup);
+        }
+      } catch (e) {
+        console.warn(`Floor tiles rendering failed for room ${room.name || room.id}:`, e);
       }
+    }
+  }
 
-      labelWrap.append(name, meta);
+  // Room label
+  const roomBounds = getRoomBounds(room);
+  const labelX = roomBounds.width / 2 + roomBounds.minX;
+  const labelY = roomBounds.height / 2 + roomBounds.minY;
 
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.className = "checkbox export-room-checkbox";
-      checkbox.dataset.roomId = room.id;
-      checkbox.checked = hasSelection ? selection.has(room.id) : true;
+  const labelGroup = svgEl("g", { cursor: isSelected ? "text" : "pointer" });
 
-      row.append(checkbox, labelWrap);
-      group.appendChild(row);
+  // Background pill for label
+  const labelText = room.name || t("tabs.room");
+  const fontSize = Math.min(16, Math.max(10, roomBounds.width / 10));
+
+  const textEl = svgEl("text", {
+    x: labelX,
+    y: labelY,
+    fill: isSelected ? "#3b82f6" : "rgba(231, 238, 252, 0.9)",
+    "font-size": fontSize,
+    "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+    "font-weight": isSelected ? "600" : "500",
+    "text-anchor": "middle",
+    "dominant-baseline": "middle"
+  });
+  textEl.appendChild(document.createTextNode(labelText));
+  labelGroup.appendChild(textEl);
+
+  // Add click handler for inline name editing (matching exclusion label pattern)
+  if (isSelected && onRoomNameEdit) {
+    const openNameEdit = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // Hide the label group
+      labelGroup.style.display = "none";
+
+      // Start text editing mode - use absolute coordinates
+      const absX = pos.x + labelX;
+      const absY = pos.y + labelY;
+      startSvgTextEdit({
+        svg,
+        x: absX,
+        y: absY,
+        value: room.name || "",
+        textStyle: {
+          fill: "#3b82f6",
+          "font-size": fontSize,
+          "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+          "font-weight": "600"
+        },
+        onCommit: (newName) => {
+          labelGroup.style.display = "";
+          if (newName && newName.trim() !== (room.name || "").trim()) {
+            onRoomNameEdit({ id: room.id, name: newName.trim() });
+          }
+        },
+        onCancel: () => {
+          labelGroup.style.display = "";
+        }
+      });
+    };
+    labelGroup.addEventListener("pointerdown", openNameEdit);
+    labelGroup.addEventListener("click", openNameEdit);
+  }
+
+  roomGroup.appendChild(labelGroup);
+
+  // Event handlers
+  if (onRoomClick) {
+    roomGroup.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onRoomClick(room.id);
+    });
+  }
+
+  if (onRoomDoubleClick) {
+    roomGroup.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      onRoomDoubleClick(room.id);
+    });
+  }
+
+  if (onRoomPointerDown) {
+    roomGroup.addEventListener("pointerdown", (e) => {
+      if (e.button === 0) { // Left mouse button
+        onRoomPointerDown(e, room.id);
+      }
+    });
+  }
+
+  svg.appendChild(roomGroup);
+
+  // Add resize handles for selected room (only for true axis-aligned rectangles)
+  if (isSelected && onRoomResizePointerDown && isRectRoom(room)) {
+    const handleRadius = 6;
+    const handles = [
+      { type: "nw", x: roomBounds.minX, y: roomBounds.minY, cursor: "nwse-resize" },
+      { type: "ne", x: roomBounds.maxX, y: roomBounds.minY, cursor: "nesw-resize" },
+      { type: "se", x: roomBounds.maxX, y: roomBounds.maxY, cursor: "nwse-resize" },
+      { type: "sw", x: roomBounds.minX, y: roomBounds.maxY, cursor: "nesw-resize" },
+      { type: "n", x: (roomBounds.minX + roomBounds.maxX) / 2, y: roomBounds.minY, cursor: "ns-resize" },
+      { type: "s", x: (roomBounds.minX + roomBounds.maxX) / 2, y: roomBounds.maxY, cursor: "ns-resize" },
+      { type: "e", x: roomBounds.maxX, y: (roomBounds.minY + roomBounds.maxY) / 2, cursor: "ew-resize" },
+      { type: "w", x: roomBounds.minX, y: (roomBounds.minY + roomBounds.maxY) / 2, cursor: "ew-resize" }
+    ];
+
+    for (const h of handles) {
+      const handle = svgEl("circle", {
+        cx: pos.x + h.x,
+        cy: pos.y + h.y,
+        r: handleRadius,
+        fill: "#3b82f6",
+        stroke: "#fff",
+        "stroke-width": 1.5,
+        cursor: h.cursor,
+        "data-roomid": room.id,
+        "data-resize-handle": h.type
+      });
+      handle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        onRoomResizePointerDown(e, room.id, h.type);
+      });
+      svg.appendChild(handle);
     }
 
-    listEl.appendChild(group);
+    // Editable dimension labels (matching section pattern)
+    const labelBaseStyle = {
+      fill: "#3b82f6",
+      "font-size": 11,
+      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      "font-weight": 500,
+      "dominant-baseline": "middle"
+    };
+    const pad = 14;
+
+    const fmtCm = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "0";
+      return n % 1 === 0 ? String(n) : n.toFixed(1);
+    };
+
+    const addRoomEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
+      const labelGroup = svgEl("g", { cursor: "text" });
+      if (angle) {
+        labelGroup.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
+      }
+      const textEl = svgEl("text", { ...labelBaseStyle, x, y, "text-anchor": anchor });
+      textEl.textContent = text;
+      labelGroup.appendChild(textEl);
+      svg.appendChild(labelGroup);
+
+      if (!onRoomInlineEdit) return;
+      const openEdit = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        labelGroup.style.display = "none";
+        startSvgEdit({
+          svg,
+          x,
+          y,
+          angle,
+          value,
+          textStyle: labelBaseStyle,
+          onCommit: (nextVal) => {
+            labelGroup.style.display = "";
+            onRoomInlineEdit({ id: room.id, key, value: nextVal });
+          },
+          onCancel: () => {
+            labelGroup.style.display = "";
+          },
+          anchor
+        });
+      };
+      labelGroup.addEventListener("pointerdown", openEdit);
+      labelGroup.addEventListener("click", openEdit);
+    };
+
+    // Width label (bottom center)
+    const widthLabelX = pos.x + roomBounds.minX + roomBounds.width / 2;
+    const widthLabelY = pos.y + roomBounds.maxY + pad;
+    addRoomEditableLabel(`${fmtCm(roomBounds.width)} cm`, roomBounds.width, "widthCm", widthLabelX, widthLabelY, "middle", 0);
+
+    // Height label (right side, rotated)
+    const heightLabelX = pos.x + roomBounds.maxX + pad;
+    const heightLabelY = pos.y + roomBounds.minY + roomBounds.height / 2;
+    addRoomEditableLabel(`${fmtCm(roomBounds.height)} cm`, roomBounds.height, "heightCm", heightLabelX, heightLabelY, "middle", 90);
+  }
+
+  // Add resize handles for selected circle/ellipse rooms
+  if (isSelected && isCircleRoom(room) && onRoomResizePointerDown) {
+    const { cx, cy, rx, ry } = room.circle;
+    const handleRadius = 6;
+    const handles = [
+      { type: "n", x: cx, y: cy - ry, cursor: "ns-resize" },
+      { type: "s", x: cx, y: cy + ry, cursor: "ns-resize" },
+      { type: "e", x: cx + rx, y: cy, cursor: "ew-resize" },
+      { type: "w", x: cx - rx, y: cy, cursor: "ew-resize" }
+    ];
+
+    for (const h of handles) {
+      const handle = svgEl("circle", {
+        cx: pos.x + h.x,
+        cy: pos.y + h.y,
+        r: handleRadius,
+        fill: "#3b82f6",
+        stroke: "#fff",
+        "stroke-width": 1.5,
+        cursor: h.cursor,
+        "data-roomid": room.id,
+        "data-resize-handle": h.type
+      });
+      handle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        onRoomResizePointerDown(e, room.id, h.type);
+      });
+      svg.appendChild(handle);
+    }
+
+    // Editable dimension labels for circle/ellipse
+    const labelBaseStyle = {
+      fill: "#3b82f6",
+      "font-size": 11,
+      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      "font-weight": 500,
+      "dominant-baseline": "middle"
+    };
+    const pad = 14;
+
+    const fmtCm = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "0";
+      return n % 1 === 0 ? String(n) : n.toFixed(1);
+    };
+
+    const addRoomEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
+      const labelGroup = svgEl("g", { cursor: "text" });
+      if (angle) {
+        labelGroup.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
+      }
+      const textEl = svgEl("text", { ...labelBaseStyle, x, y, "text-anchor": anchor });
+      textEl.textContent = text;
+      labelGroup.appendChild(textEl);
+      svg.appendChild(labelGroup);
+
+      if (!onRoomInlineEdit) return;
+      const openEdit = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        labelGroup.style.display = "none";
+        startSvgEdit({
+          svg,
+          x,
+          y,
+          angle,
+          value,
+          textStyle: labelBaseStyle,
+          onCommit: (nextVal) => {
+            labelGroup.style.display = "";
+            onRoomInlineEdit({ id: room.id, key, value: nextVal });
+          },
+          onCancel: () => {
+            labelGroup.style.display = "";
+          },
+          anchor
+        });
+      };
+      labelGroup.addEventListener("pointerdown", openEdit);
+      labelGroup.addEventListener("click", openEdit);
+    };
+
+    // Width label (bottom center)
+    const widthLabelX = pos.x + cx;
+    const widthLabelY = pos.y + cy + ry + pad;
+    addRoomEditableLabel(`${fmtCm(2 * rx)} cm`, 2 * rx, "widthCm", widthLabelX, widthLabelY, "middle", 0);
+
+    // Height label (right side, rotated)
+    const heightLabelX = pos.x + cx + rx + pad;
+    const heightLabelY = pos.y + cy;
+    addRoomEditableLabel(`${fmtCm(2 * ry)} cm`, 2 * ry, "heightCm", heightLabelX, heightLabelY, "middle", 90);
+  }
+
+
+  // Add vertex handles for selected free-form rooms (polygonVertices)
+  if (isSelected && onVertexPointerDown && room.polygonVertices?.length > 0 && !isCircleRoom(room)) {
+    const vertexHandleRadius = 6;
+
+    for (let i = 0; i < room.polygonVertices.length; i++) {
+      const vertex = room.polygonVertices[i];
+      const absX = pos.x + vertex.x;
+      const absY = pos.y + vertex.y;
+
+      const handle = svgEl("circle", {
+        cx: absX,
+        cy: absY,
+        r: vertexHandleRadius,
+        fill: "#3b82f6",
+        stroke: "#fff",
+        "stroke-width": 2,
+        cursor: "move",
+        "data-vertex-roomid": room.id,
+        "data-vertex-index": i
+      });
+
+      handle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        onVertexPointerDown(e, room.id, i);
+      });
+
+      svg.appendChild(handle);
+    }
+
+    // Editable edge length labels for free-form rooms
+    const edgeLabelStyle = {
+      fill: "#3b82f6",
+      "font-size": 11,
+      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
+      "font-weight": 500,
+      "text-anchor": "middle",
+      "dominant-baseline": "middle"
+    };
+
+    const fmtCm = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return "0";
+      return n % 1 === 0 ? String(n) : n.toFixed(1);
+    };
+
+    for (let i = 0; i < room.polygonVertices.length; i++) {
+      const v1 = room.polygonVertices[i];
+      const v2 = room.polygonVertices[(i + 1) % room.polygonVertices.length];
+
+      // Calculate edge properties
+      const dx = v2.x - v1.x;
+      const dy = v2.y - v1.y;
+      const edgeLength = Math.hypot(dx, dy);
+      const midX = pos.x + (v1.x + v2.x) / 2;
+      const midY = pos.y + (v1.y + v2.y) / 2;
+
+      // Calculate angle for label rotation (perpendicular offset)
+      let angle = Math.atan2(dy, dx) * (180 / Math.PI);
+      // Flip text if it would be upside down
+      if (angle > 90 || angle < -90) {
+        angle += 180;
+      }
+
+      // Offset label perpendicular to edge (outside the polygon)
+      const offsetDist = 12;
+      const perpX = -dy / edgeLength * offsetDist;
+      const perpY = dx / edgeLength * offsetDist;
+      const labelX = midX + perpX;
+      const labelY = midY + perpY;
+
+      const labelGroup = svgEl("g", { cursor: "text" });
+      labelGroup.setAttribute("transform", `rotate(${angle} ${labelX} ${labelY})`);
+      const textEl = svgEl("text", { ...edgeLabelStyle, x: labelX, y: labelY });
+      textEl.textContent = `${fmtCm(edgeLength)} cm`;
+      labelGroup.appendChild(textEl);
+
+      // Show secondary info: wall height if sloped, thickness if non-default
+      const edgeLabelWall = floor ? getWallForEdge(floor, room.id, i) : null;
+      if (edgeLabelWall) {
+        const isSloped = edgeLabelWall.heightStartCm !== edgeLabelWall.heightEndCm;
+        const nonDefaultThick = edgeLabelWall.thicknessCm !== 12;
+        if (isSloped || nonDefaultThick) {
+          const parts = [];
+          if (nonDefaultThick) parts.push(`${fmtCm(edgeLabelWall.thicknessCm)}cm`);
+          if (isSloped) parts.push(`↕${fmtCm(edgeLabelWall.heightStartCm)}→${fmtCm(edgeLabelWall.heightEndCm)}`);
+          const subText = svgEl("text", {
+            ...edgeLabelStyle,
+            x: labelX,
+            y: labelY + 12,
+            fill: "#94a3b8",
+            "font-size": 9
+          });
+          subText.textContent = parts.join(" · ");
+          labelGroup.appendChild(subText);
+        }
+      }
+
+      svg.appendChild(labelGroup);
+
+      // Add click handler for inline edge length editing
+      if (onPolygonEdgeEdit) {
+        const edgeIndex = i;
+        const openEdgeEdit = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          labelGroup.style.display = "none";
+          startSvgEdit({
+            svg,
+            x: labelX,
+            y: labelY,
+            angle,
+            value: edgeLength,
+            textStyle: edgeLabelStyle,
+            onCommit: (newLength) => {
+              labelGroup.style.display = "";
+              if (newLength > 0 && Math.abs(newLength - edgeLength) > 0.01) {
+                onPolygonEdgeEdit({ id: room.id, edgeIndex, length: newLength });
+              }
+            },
+            onCancel: () => {
+              labelGroup.style.display = "";
+            },
+            anchor: "middle"
+          });
+        };
+        labelGroup.addEventListener("pointerdown", openEdgeEdit);
+        labelGroup.addEventListener("click", openEdgeEdit);
+      }
+    }
   }
 }
 
@@ -3131,494 +2681,18 @@ export function renderFloorCanvas({
   const roomsToRenderFloor = floor.rooms;
 
   for (const room of roomsToRenderFloor) {
-    const pos = room.floorPosition || { x: 0, y: 0 };
-    const roomGroup = svgEl("g", {
-      transform: `translate(${pos.x}, ${pos.y})`,
-      "data-roomid": room.id,
-      cursor: "pointer"
+    _renderFloorRoom(svg, room, floor, {
+      state,
+      selectedRoomId,
+      onRoomClick,
+      onRoomDoubleClick,
+      onRoomPointerDown,
+      onRoomResizePointerDown,
+      onRoomInlineEdit,
+      onVertexPointerDown,
+      onRoomNameEdit,
+      onPolygonEdgeEdit
     });
-
-    const isSelected = room.id === selectedRoomId;
-
-    // Get room polygon for rendering (in room-local coordinates)
-    // The group transform handles floor positioning
-    if (isCircleRoom(room)) {
-      const { cx, cy, rx, ry } = room.circle;
-      roomGroup.appendChild(svgEl("ellipse", {
-        cx, cy, rx, ry,
-        fill: isSelected ? "rgba(59, 130, 246, 0.25)" : "rgba(100, 150, 200, 0.15)",
-        stroke: isSelected ? "#3b82f6" : "rgba(200, 220, 255, 0.5)",
-        "stroke-width": isSelected ? 3 : 2
-      }));
-    }
-
-    const roomPoly = roomPolygon(room);
-    if (!isCircleRoom(room) && roomPoly && roomPoly.length > 0) {
-      // Convert polygon to path
-      const pathD = multiPolygonToPathD(roomPoly);
-
-      // Room fill with clear visibility
-      roomGroup.appendChild(svgEl("path", {
-        d: pathD,
-        fill: isSelected ? "rgba(59, 130, 246, 0.25)" : "rgba(100, 150, 200, 0.15)",
-        stroke: isSelected ? "#3b82f6" : "rgba(200, 220, 255, 0.5)",
-        "stroke-width": isSelected ? 3 : 2
-      }));
-
-      // Render tiles preview if enabled and room has tile config
-      // Use effective settings (from origin room if in pattern group)
-      const effectiveSettings = getEffectiveTileSettings(room, floor);
-      const effectiveTile = effectiveSettings.tile;
-      if (state.view?.showFloorTiles && effectiveTile?.widthCm > 0 && effectiveTile?.heightCm > 0) {
-        try {
-          const tileResult = computeSurfaceTiles(
-            { ...state, selectedRoomId: room.id },
-            room,
-            floor,
-            {
-              exclusions: getAllFloorExclusions(room),
-              includeDoorwayPatches: true,
-              effectiveSettings,
-              originOverride: computePatternGroupOrigin(room, floor),
-              isRemovalMode: false,
-            }
-          );
-          console.log(`[render:2D-floor] room=${room.id} tiles=${tileResult.tiles.length}`);
-
-          if (tileResult.error) {
-            console.warn(`Floor tiles error for room ${room.name || room.id}:`, tileResult.error);
-          }
-
-          if (tileResult.tiles.length > 0) {
-            // Create a group for tiles
-            const tilesGroup = svgEl("g", { opacity: 0.8 });
-
-            for (const tile of tileResult.tiles.slice(0, 1000)) { // Limit tiles for performance
-              if (!tile.d) continue;
-              tilesGroup.appendChild(svgEl("path", {
-                d: tile.d,
-                fill: "rgba(100, 116, 139, 0.5)",
-                stroke: tileResult.groutColor,
-                "stroke-width": effectiveSettings.grout?.widthCm || 0.2
-              }));
-            }
-
-            roomGroup.appendChild(tilesGroup);
-          }
-        } catch (e) {
-          console.warn(`Floor tiles rendering failed for room ${room.name || room.id}:`, e);
-        }
-      }
-    }
-
-    // Room label
-    const roomBounds = getRoomBounds(room);
-    const labelX = roomBounds.width / 2 + roomBounds.minX;
-    const labelY = roomBounds.height / 2 + roomBounds.minY;
-
-    const labelGroup = svgEl("g", { cursor: isSelected ? "text" : "pointer" });
-
-    // Background pill for label
-    const labelText = room.name || t("tabs.room");
-    const fontSize = Math.min(16, Math.max(10, roomBounds.width / 10));
-
-    const textEl = svgEl("text", {
-      x: labelX,
-      y: labelY,
-      fill: isSelected ? "#3b82f6" : "rgba(231, 238, 252, 0.9)",
-      "font-size": fontSize,
-      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-      "font-weight": isSelected ? "600" : "500",
-      "text-anchor": "middle",
-      "dominant-baseline": "middle"
-    });
-    textEl.appendChild(document.createTextNode(labelText));
-    labelGroup.appendChild(textEl);
-
-    // Add click handler for inline name editing (matching exclusion label pattern)
-    if (isSelected && onRoomNameEdit) {
-      const openNameEdit = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        // Hide the label group
-        labelGroup.style.display = "none";
-
-        // Start text editing mode - use absolute coordinates
-        const absX = pos.x + labelX;
-        const absY = pos.y + labelY;
-        startSvgTextEdit({
-          svg,
-          x: absX,
-          y: absY,
-          value: room.name || "",
-          textStyle: {
-            fill: "#3b82f6",
-            "font-size": fontSize,
-            "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-            "font-weight": "600"
-          },
-          onCommit: (newName) => {
-            labelGroup.style.display = "";
-            if (newName && newName.trim() !== (room.name || "").trim()) {
-              onRoomNameEdit({ id: room.id, name: newName.trim() });
-            }
-          },
-          onCancel: () => {
-            labelGroup.style.display = "";
-          }
-        });
-      };
-      labelGroup.addEventListener("pointerdown", openNameEdit);
-      labelGroup.addEventListener("click", openNameEdit);
-    }
-
-    roomGroup.appendChild(labelGroup);
-
-    // Event handlers
-    if (onRoomClick) {
-      roomGroup.addEventListener("click", (e) => {
-        e.stopPropagation();
-        onRoomClick(room.id);
-      });
-    }
-
-    if (onRoomDoubleClick) {
-      roomGroup.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        onRoomDoubleClick(room.id);
-      });
-    }
-
-    if (onRoomPointerDown) {
-      roomGroup.addEventListener("pointerdown", (e) => {
-        if (e.button === 0) { // Left mouse button
-          onRoomPointerDown(e, room.id);
-        }
-      });
-    }
-
-    svg.appendChild(roomGroup);
-
-    // Add resize handles for selected room (only for true axis-aligned rectangles)
-    if (isSelected && onRoomResizePointerDown && isRectRoom(room)) {
-      const handleRadius = 6;
-      const handles = [
-        { type: "nw", x: roomBounds.minX, y: roomBounds.minY, cursor: "nwse-resize" },
-        { type: "ne", x: roomBounds.maxX, y: roomBounds.minY, cursor: "nesw-resize" },
-        { type: "se", x: roomBounds.maxX, y: roomBounds.maxY, cursor: "nwse-resize" },
-        { type: "sw", x: roomBounds.minX, y: roomBounds.maxY, cursor: "nesw-resize" },
-        { type: "n", x: (roomBounds.minX + roomBounds.maxX) / 2, y: roomBounds.minY, cursor: "ns-resize" },
-        { type: "s", x: (roomBounds.minX + roomBounds.maxX) / 2, y: roomBounds.maxY, cursor: "ns-resize" },
-        { type: "e", x: roomBounds.maxX, y: (roomBounds.minY + roomBounds.maxY) / 2, cursor: "ew-resize" },
-        { type: "w", x: roomBounds.minX, y: (roomBounds.minY + roomBounds.maxY) / 2, cursor: "ew-resize" }
-      ];
-
-      for (const h of handles) {
-        const handle = svgEl("circle", {
-          cx: pos.x + h.x,
-          cy: pos.y + h.y,
-          r: handleRadius,
-          fill: "#3b82f6",
-          stroke: "#fff",
-          "stroke-width": 1.5,
-          cursor: h.cursor,
-          "data-roomid": room.id,
-          "data-resize-handle": h.type
-        });
-        handle.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          onRoomResizePointerDown(e, room.id, h.type);
-        });
-        svg.appendChild(handle);
-      }
-
-      // Editable dimension labels (matching section pattern)
-      const labelBaseStyle = {
-        fill: "#3b82f6",
-        "font-size": 11,
-        "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-        "font-weight": 500,
-        "dominant-baseline": "middle"
-      };
-      const pad = 14;
-
-      const fmtCm = (v) => {
-        const n = Number(v);
-        if (!Number.isFinite(n)) return "0";
-        return n % 1 === 0 ? String(n) : n.toFixed(1);
-      };
-
-      const addRoomEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
-        const labelGroup = svgEl("g", { cursor: "text" });
-        if (angle) {
-          labelGroup.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
-        }
-        const textEl = svgEl("text", { ...labelBaseStyle, x, y, "text-anchor": anchor });
-        textEl.textContent = text;
-        labelGroup.appendChild(textEl);
-        svg.appendChild(labelGroup);
-
-        if (!onRoomInlineEdit) return;
-        const openEdit = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          labelGroup.style.display = "none";
-          startSvgEdit({
-            svg,
-            x,
-            y,
-            angle,
-            value,
-            textStyle: labelBaseStyle,
-            onCommit: (nextVal) => {
-              labelGroup.style.display = "";
-              onRoomInlineEdit({ id: room.id, key, value: nextVal });
-            },
-            onCancel: () => {
-              labelGroup.style.display = "";
-            },
-            anchor
-          });
-        };
-        labelGroup.addEventListener("pointerdown", openEdit);
-        labelGroup.addEventListener("click", openEdit);
-      };
-
-      // Width label (bottom center)
-      const widthLabelX = pos.x + roomBounds.minX + roomBounds.width / 2;
-      const widthLabelY = pos.y + roomBounds.maxY + pad;
-      addRoomEditableLabel(`${fmtCm(roomBounds.width)} cm`, roomBounds.width, "widthCm", widthLabelX, widthLabelY, "middle", 0);
-
-      // Height label (right side, rotated)
-      const heightLabelX = pos.x + roomBounds.maxX + pad;
-      const heightLabelY = pos.y + roomBounds.minY + roomBounds.height / 2;
-      addRoomEditableLabel(`${fmtCm(roomBounds.height)} cm`, roomBounds.height, "heightCm", heightLabelX, heightLabelY, "middle", 90);
-    }
-
-    // Add resize handles for selected circle/ellipse rooms
-    if (isSelected && isCircleRoom(room) && onRoomResizePointerDown) {
-      const { cx, cy, rx, ry } = room.circle;
-      const handleRadius = 6;
-      const handles = [
-        { type: "n", x: cx, y: cy - ry, cursor: "ns-resize" },
-        { type: "s", x: cx, y: cy + ry, cursor: "ns-resize" },
-        { type: "e", x: cx + rx, y: cy, cursor: "ew-resize" },
-        { type: "w", x: cx - rx, y: cy, cursor: "ew-resize" }
-      ];
-
-      for (const h of handles) {
-        const handle = svgEl("circle", {
-          cx: pos.x + h.x,
-          cy: pos.y + h.y,
-          r: handleRadius,
-          fill: "#3b82f6",
-          stroke: "#fff",
-          "stroke-width": 1.5,
-          cursor: h.cursor,
-          "data-roomid": room.id,
-          "data-resize-handle": h.type
-        });
-        handle.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          onRoomResizePointerDown(e, room.id, h.type);
-        });
-        svg.appendChild(handle);
-      }
-
-      // Editable dimension labels for circle/ellipse
-      const labelBaseStyle = {
-        fill: "#3b82f6",
-        "font-size": 11,
-        "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-        "font-weight": 500,
-        "dominant-baseline": "middle"
-      };
-      const pad = 14;
-
-      const fmtCm = (v) => {
-        const n = Number(v);
-        if (!Number.isFinite(n)) return "0";
-        return n % 1 === 0 ? String(n) : n.toFixed(1);
-      };
-
-      const addRoomEditableLabel = (text, value, key, x, y, anchor = "middle", angle = 0) => {
-        const labelGroup = svgEl("g", { cursor: "text" });
-        if (angle) {
-          labelGroup.setAttribute("transform", `rotate(${angle} ${x} ${y})`);
-        }
-        const textEl = svgEl("text", { ...labelBaseStyle, x, y, "text-anchor": anchor });
-        textEl.textContent = text;
-        labelGroup.appendChild(textEl);
-        svg.appendChild(labelGroup);
-
-        if (!onRoomInlineEdit) return;
-        const openEdit = (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          labelGroup.style.display = "none";
-          startSvgEdit({
-            svg,
-            x,
-            y,
-            angle,
-            value,
-            textStyle: labelBaseStyle,
-            onCommit: (nextVal) => {
-              labelGroup.style.display = "";
-              onRoomInlineEdit({ id: room.id, key, value: nextVal });
-            },
-            onCancel: () => {
-              labelGroup.style.display = "";
-            },
-            anchor
-          });
-        };
-        labelGroup.addEventListener("pointerdown", openEdit);
-        labelGroup.addEventListener("click", openEdit);
-      };
-
-      // Width label (bottom center)
-      const widthLabelX = pos.x + cx;
-      const widthLabelY = pos.y + cy + ry + pad;
-      addRoomEditableLabel(`${fmtCm(2 * rx)} cm`, 2 * rx, "widthCm", widthLabelX, widthLabelY, "middle", 0);
-
-      // Height label (right side, rotated)
-      const heightLabelX = pos.x + cx + rx + pad;
-      const heightLabelY = pos.y + cy;
-      addRoomEditableLabel(`${fmtCm(2 * ry)} cm`, 2 * ry, "heightCm", heightLabelX, heightLabelY, "middle", 90);
-    }
-
-
-    // Add vertex handles for selected free-form rooms (polygonVertices)
-    if (isSelected && onVertexPointerDown && room.polygonVertices?.length > 0 && !isCircleRoom(room)) {
-      const vertexHandleRadius = 6;
-
-      for (let i = 0; i < room.polygonVertices.length; i++) {
-        const vertex = room.polygonVertices[i];
-        const absX = pos.x + vertex.x;
-        const absY = pos.y + vertex.y;
-
-        const handle = svgEl("circle", {
-          cx: absX,
-          cy: absY,
-          r: vertexHandleRadius,
-          fill: "#3b82f6",
-          stroke: "#fff",
-          "stroke-width": 2,
-          cursor: "move",
-          "data-vertex-roomid": room.id,
-          "data-vertex-index": i
-        });
-
-        handle.addEventListener("pointerdown", (e) => {
-          e.stopPropagation();
-          onVertexPointerDown(e, room.id, i);
-        });
-
-        svg.appendChild(handle);
-      }
-
-      // Editable edge length labels for free-form rooms
-      const edgeLabelStyle = {
-        fill: "#3b82f6",
-        "font-size": 11,
-        "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-        "font-weight": 500,
-        "text-anchor": "middle",
-        "dominant-baseline": "middle"
-      };
-
-      const fmtCm = (v) => {
-        const n = Number(v);
-        if (!Number.isFinite(n)) return "0";
-        return n % 1 === 0 ? String(n) : n.toFixed(1);
-      };
-
-      for (let i = 0; i < room.polygonVertices.length; i++) {
-        const v1 = room.polygonVertices[i];
-        const v2 = room.polygonVertices[(i + 1) % room.polygonVertices.length];
-
-        // Calculate edge properties
-        const dx = v2.x - v1.x;
-        const dy = v2.y - v1.y;
-        const edgeLength = Math.hypot(dx, dy);
-        const midX = pos.x + (v1.x + v2.x) / 2;
-        const midY = pos.y + (v1.y + v2.y) / 2;
-
-        // Calculate angle for label rotation (perpendicular offset)
-        let angle = Math.atan2(dy, dx) * (180 / Math.PI);
-        // Flip text if it would be upside down
-        if (angle > 90 || angle < -90) {
-          angle += 180;
-        }
-
-        // Offset label perpendicular to edge (outside the polygon)
-        const offsetDist = 12;
-        const perpX = -dy / edgeLength * offsetDist;
-        const perpY = dx / edgeLength * offsetDist;
-        const labelX = midX + perpX;
-        const labelY = midY + perpY;
-
-        const labelGroup = svgEl("g", { cursor: "text" });
-        labelGroup.setAttribute("transform", `rotate(${angle} ${labelX} ${labelY})`);
-        const textEl = svgEl("text", { ...edgeLabelStyle, x: labelX, y: labelY });
-        textEl.textContent = `${fmtCm(edgeLength)} cm`;
-        labelGroup.appendChild(textEl);
-
-        // Show secondary info: wall height if sloped, thickness if non-default
-        const edgeLabelWall = floor ? getWallForEdge(floor, room.id, i) : null;
-        if (edgeLabelWall) {
-          const isSloped = edgeLabelWall.heightStartCm !== edgeLabelWall.heightEndCm;
-          const nonDefaultThick = edgeLabelWall.thicknessCm !== 12;
-          if (isSloped || nonDefaultThick) {
-            const parts = [];
-            if (nonDefaultThick) parts.push(`${fmtCm(edgeLabelWall.thicknessCm)}cm`);
-            if (isSloped) parts.push(`↕${fmtCm(edgeLabelWall.heightStartCm)}→${fmtCm(edgeLabelWall.heightEndCm)}`);
-            const subText = svgEl("text", {
-              ...edgeLabelStyle,
-              x: labelX,
-              y: labelY + 12,
-              fill: "#94a3b8",
-              "font-size": 9
-            });
-            subText.textContent = parts.join(" · ");
-            labelGroup.appendChild(subText);
-          }
-        }
-
-        svg.appendChild(labelGroup);
-
-        // Add click handler for inline edge length editing
-        if (onPolygonEdgeEdit) {
-          const edgeIndex = i;
-          const openEdgeEdit = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            labelGroup.style.display = "none";
-            startSvgEdit({
-              svg,
-              x: labelX,
-              y: labelY,
-              angle,
-              value: edgeLength,
-              textStyle: edgeLabelStyle,
-              onCommit: (newLength) => {
-                labelGroup.style.display = "";
-                if (newLength > 0 && Math.abs(newLength - edgeLength) > 0.01) {
-                  onPolygonEdgeEdit({ id: room.id, edgeIndex, length: newLength });
-                }
-              },
-              onCancel: () => {
-                labelGroup.style.display = "";
-              },
-              anchor: "middle"
-            });
-          };
-          labelGroup.addEventListener("pointerdown", openEdgeEdit);
-          labelGroup.addEventListener("click", openEdgeEdit);
-        }
-      }
-    }
   }
 
   // Centralized wall geometry for floor-level rendering
@@ -3732,244 +2806,5 @@ export function renderFloorCanvas({
   }
 }
 
-/**
- * Renders the Pattern Groups view - shows all rooms with group visualization.
- * Similar to floor view but focuses on pattern group management.
- */
-export function renderPatternGroupsCanvas({
-  state,
-  floor,
-  selectedRoomId,
-  activeGroupId = null,
-  onRoomClick,
-  onRoomDoubleClick,
-  svgOverride = null
-}) {
-  const svg = svgOverride || document.getElementById("planSvg");
-  if (!svg) return;
 
-  // Clear existing content
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-
-  if (!floor || !floor.rooms?.length) {
-    svg.setAttribute("viewBox", "0 0 100 100");
-    return;
-  }
-
-  // Get floor bounds encompassing all rooms
-  const bounds = getFloorBounds(floor);
-  const padding = 80;
-
-  const baseViewBox = {
-    minX: bounds.minX - padding,
-    minY: bounds.minY - padding,
-    width: bounds.width + 2 * padding,
-    height: bounds.height + 2 * padding
-  };
-
-  // Use floor-specific viewport key (shared with floor view)
-  const viewportKey = `floor:${floor.id}`;
-  setBaseViewBox(viewportKey, baseViewBox);
-
-  const effectiveViewBox = calculateEffectiveViewBox(viewportKey) || baseViewBox;
-  const viewBox = effectiveViewBox;
-
-  svg.setAttribute("viewBox", `${viewBox.minX} ${viewBox.minY} ${viewBox.width} ${viewBox.height}`);
-  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-
-  // Background
-  const bgPadding = Math.max(viewBox.width, viewBox.height) * 2;
-  svg.appendChild(svgEl("rect", {
-    x: viewBox.minX - bgPadding,
-    y: viewBox.minY - bgPadding,
-    width: viewBox.width + 2 * bgPadding,
-    height: viewBox.height + 2 * bgPadding,
-    fill: "#081022"
-  }));
-
-  // Render grid - use viewBox with extra padding for aspect ratio letterboxing
-  if (state.view?.showGrid) {
-    const gridGroup = svgEl("g", { opacity: 0.5 });
-    const minor = 10, major = 100;
-    const gridPadding = Math.max(viewBox.width, viewBox.height) * 0.5;
-    const gridBounds = {
-      minX: Math.floor((viewBox.minX - gridPadding) / major) * major,
-      minY: Math.floor((viewBox.minY - gridPadding) / major) * major,
-      maxX: Math.ceil((viewBox.minX + viewBox.width + gridPadding) / major) * major,
-      maxY: Math.ceil((viewBox.minY + viewBox.height + gridPadding) / major) * major
-    };
-
-    for (let x = gridBounds.minX; x <= gridBounds.maxX; x += minor) {
-      const isMajor = x % major === 0;
-      gridGroup.appendChild(svgEl("line", {
-        x1: x, y1: gridBounds.minY, x2: x, y2: gridBounds.maxY,
-        stroke: isMajor ? "#1f2b46" : "#14203a",
-        "stroke-width": isMajor ? 0.6 : 0.3
-      }));
-    }
-    for (let y = gridBounds.minY; y <= gridBounds.maxY; y += minor) {
-      const isMajor = y % major === 0;
-      gridGroup.appendChild(svgEl("line", {
-        x1: gridBounds.minX, y1: y, x2: gridBounds.maxX, y2: y,
-        stroke: isMajor ? "#1f2b46" : "#14203a",
-        "stroke-width": isMajor ? 0.6 : 0.3
-      }));
-    }
-    svg.appendChild(gridGroup);
-  }
-
-  // Render rooms
-  const roomsToRenderPG = floor.rooms;
-
-  for (const room of roomsToRenderPG) {
-    const pos = room.floorPosition || { x: 0, y: 0 };
-    const roomGroup = svgEl("g", {
-      transform: `translate(${pos.x}, ${pos.y})`,
-      "data-roomid": room.id,
-      cursor: "pointer"
-    });
-
-    const isSelected = room.id === selectedRoomId;
-    const patternGroup = getRoomPatternGroup(floor, room.id);
-    const isInGroup = !!patternGroup;
-    const isOrigin = patternGroup?.originRoomId === room.id;
-    const isActiveGroup = isInGroup && patternGroup.id === activeGroupId;
-
-    // Determine colors based on group membership and active state
-    let fillColor, strokeColor, strokeWidth;
-
-    if (isActiveGroup) {
-      fillColor = isOrigin ? "rgba(59, 130, 246, 0.35)" : "rgba(59, 130, 246, 0.2)";
-      strokeColor = "#3b82f6";
-      strokeWidth = isOrigin ? 4 : 3;
-    } else if (isInGroup) {
-      fillColor = "rgba(100, 116, 139, 0.2)";
-      strokeColor = "rgba(148, 163, 184, 0.8)";
-      strokeWidth = 3;
-    } else {
-      fillColor = "rgba(100, 116, 139, 0.15)";
-      strokeColor = "rgba(148, 163, 184, 0.5)";
-      strokeWidth = 2;
-    }
-
-    // Get room polygon
-    const roomPoly = roomPolygon(room);
-    if (isCircleRoom(room)) {
-      const { cx, cy, rx, ry } = room.circle;
-      roomGroup.appendChild(svgEl("ellipse", {
-        cx, cy, rx, ry,
-        fill: fillColor,
-        stroke: strokeColor,
-        "stroke-width": strokeWidth
-      }));
-      if (isSelected) {
-        roomGroup.appendChild(svgEl("ellipse", {
-          cx, cy, rx, ry,
-          fill: "none",
-          stroke: "#ffffff",
-          "stroke-width": 6,
-          "stroke-opacity": 0.6
-        }));
-        roomGroup.appendChild(svgEl("ellipse", {
-          cx, cy, rx, ry,
-          fill: "none",
-          stroke: "#3b82f6",
-          "stroke-width": 3,
-          "stroke-dasharray": "8,4"
-        }));
-      }
-    } else if (roomPoly && roomPoly.length > 0) {
-      const pathD = multiPolygonToPathD(roomPoly);
-
-      // Room fill
-      roomGroup.appendChild(svgEl("path", {
-        d: pathD,
-        fill: fillColor,
-        stroke: strokeColor,
-        "stroke-width": strokeWidth
-      }));
-
-      // Add selection highlight ring for selected room (visible over any group color)
-      if (isSelected) {
-        // Outer glow/selection ring
-        roomGroup.appendChild(svgEl("path", {
-          d: pathD,
-          fill: "none",
-          stroke: "#ffffff",
-          "stroke-width": 6,
-          "stroke-opacity": 0.6
-        }));
-        // Inner bright border
-        roomGroup.appendChild(svgEl("path", {
-          d: pathD,
-          fill: "none",
-          stroke: "#3b82f6",
-          "stroke-width": 3,
-          "stroke-dasharray": "8,4"
-        }));
-      }
-
-      // Add origin marker for origin rooms
-      if (isOrigin) {
-        const roomBounds = getRoomBounds(room);
-        const markerX = roomBounds.minX + 15;
-        const markerY = roomBounds.minY + 15;
-        const markerColor = isActiveGroup ? "#3b82f6" : "rgba(148, 163, 184, 0.8)";
-        const markerFill = isActiveGroup ? "rgba(59, 130, 246, 0.35)" : "rgba(100, 116, 139, 0.3)";
-
-        // Target/origin icon
-        roomGroup.appendChild(svgEl("circle", {
-          cx: markerX, cy: markerY, r: 10,
-          fill: markerFill,
-          stroke: markerColor,
-          "stroke-width": 2
-        }));
-        roomGroup.appendChild(svgEl("circle", {
-          cx: markerX, cy: markerY, r: 4,
-          fill: markerColor
-        }));
-      }
-    }
-
-    // Room label
-    const roomBounds = getRoomBounds(room);
-    const labelX = roomBounds.width / 2 + roomBounds.minX;
-    const labelY = roomBounds.height / 2 + roomBounds.minY;
-
-    const labelColor = isActiveGroup
-      ? "#3b82f6"
-      : (isSelected ? "#94a3b8" : "rgba(148, 163, 184, 0.8)");
-
-    const fontSize = Math.min(14, Math.max(9, roomBounds.width / 12));
-
-    const textEl = svgEl("text", {
-      x: labelX,
-      y: labelY,
-      fill: labelColor,
-      "font-size": fontSize,
-      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial",
-      "font-weight": isOrigin ? "700" : (isInGroup ? "600" : "500"),
-      "text-anchor": "middle",
-      "dominant-baseline": "middle"
-    });
-    textEl.appendChild(document.createTextNode(room.name || t("tabs.room")));
-    roomGroup.appendChild(textEl);
-
-    // Event handlers
-    if (onRoomClick) {
-      roomGroup.addEventListener("click", (e) => {
-        e.stopPropagation();
-        onRoomClick(room.id);
-      });
-    }
-
-    if (onRoomDoubleClick) {
-      roomGroup.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        onRoomDoubleClick(room.id);
-      });
-    }
-
-    svg.appendChild(roomGroup);
-  }
-}
+export { renderPatternGroupsCanvas } from "./render-pattern-groups.js";
