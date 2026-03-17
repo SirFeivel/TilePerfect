@@ -2,7 +2,8 @@
 import { uuid, DEFAULT_SKIRTING_CONFIG, DEFAULT_TILE_PRESET } from "./core.js";
 import { findSharedEdgeMatches } from "./floor_geometry.js";
 import { DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM, WALL_ADJACENCY_TOLERANCE_CM, EPSILON } from "./constants.js";
-import { computeSkirtingSegments, roomPolygon } from "./geometry.js";
+import { computeSkirtingSegments, roomPolygon, computeAvailableArea, tilesForPreview } from "./geometry.js";
+import polygonClipping from "polygon-clipping";
 import { FLOOR_PLAN_RULES, snapToWallType } from "./floor-plan-rules.js";
 import { enforceSkeletonWallProperties, computeStructuralBoundaries } from "./skeleton.js";
 
@@ -2103,4 +2104,62 @@ export function computeDoorwayFloorPatches(room, floor, wallGeometry, format = "
     }
   }
   return patches;
+}
+
+/**
+ * Canonical tile computation pipeline for any tileable surface.
+ * Both 2D (renderPlanSvg, renderFloorCanvas) and 3D (prepareRoom3DData,
+ * prepareFloorWallData) must call this function — never call
+ * computeAvailableArea + tilesForPreview directly in renderers.
+ *
+ * @param {Object} state - Full app state
+ * @param {Object} region - Room, wall surface region, or face region (must have polygonVertices)
+ * @param {Object|null} floor - Floor object (needed for doorway patches and pattern context)
+ * @param {Object} options
+ * @param {Array}   options.exclusions             - Exclusions to subtract (required)
+ * @param {boolean} options.includeDoorwayPatches  - Union doorway floor patches into available area (floor rooms only)
+ * @param {Object|null} options.wallGeometry       - Pre-computed wall geometry map (avoids redundant compute)
+ * @param {Object|null} options.effectiveSettings  - { tile, grout, pattern } — pass from getEffectiveTileSettings()
+ * @param {Object|null} options.originOverride     - Pattern origin — pass from computePatternGroupOrigin()
+ * @param {boolean} options.isRemovalMode          - Whether removal mode is active
+ * @returns {{ tiles: Array, groutColor: string, error: string|null }}
+ */
+export function computeSurfaceTiles(state, region, floor, options = {}) {
+  const {
+    exclusions = [],
+    includeDoorwayPatches = false,
+    wallGeometry = null,
+    effectiveSettings = null,
+    originOverride = null,
+    isRemovalMode = false,
+  } = options;
+
+  console.log(`[computeSurfaceTiles] region=${region?.id || 'anon'} excl=${exclusions.length} doorways=${includeDoorwayPatches} removalMode=${isRemovalMode}`);
+
+  const avail = computeAvailableArea(region, exclusions);
+  console.log(`[computeSurfaceTiles] avail mp=${avail.mp?.length ?? 0} polygons error=${avail.error || 'none'}`);
+
+  if (avail.error) return { tiles: [], groutColor: '#ffffff', error: avail.error };
+  if (!avail.mp) return { tiles: [], groutColor: '#ffffff', error: null };
+
+  let mp = avail.mp;
+
+  if (includeDoorwayPatches && floor) {
+    const patches = computeDoorwayFloorPatches(region, floor, wallGeometry, 'multipolygon');
+    for (const patch of patches) {
+      try {
+        mp = polygonClipping.union(mp, patch);
+      } catch (_) { /* ignore degenerate patches */ }
+    }
+  }
+
+  const result = tilesForPreview(state, mp, region, isRemovalMode, floor, {
+    originOverride,
+    effectiveSettings,
+  });
+
+  const groutColor = effectiveSettings?.grout?.colorHex || region?.grout?.colorHex || '#ffffff';
+  console.log(`[computeSurfaceTiles] result tiles=${result.tiles?.length ?? 0} error=${result.error || 'none'}`);
+
+  return { tiles: result.tiles || [], groutColor, error: result.error || null };
 }

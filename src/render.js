@@ -22,7 +22,7 @@ import {
 import { EPSILON, DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM } from "./constants.js";
 import { setBaseViewBox, calculateEffectiveViewBox, getViewport } from "./viewport.js";
 import { getFloorBounds } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches, computeSurfaceTiles } from "./walls.js";
 import { computePatternGroupOrigin, getEffectiveTileSettings, getRoomPatternGroup, isPatternGroupChild } from "./pattern-groups.js";
 
 function isCircleRoom(room) {
@@ -2000,32 +2000,22 @@ export function renderPlanSvg({
 
   if (!skipTiles && !suppressDetails && !ratioError) {
     const isRemovalMode = Boolean(state.view?.removalMode);
-    const avail = computeAvailableArea(currentRoom, getAllFloorExclusions(currentRoom));
-    if (avail.error) setLastTileError(avail.error);
+    const currentFloor = state.floors?.find(f => f.id === state.selectedFloorId);
+    const effectiveSettings = getEffectiveTileSettings(currentRoom, currentFloor);
+    const patternGroupOrigin = computePatternGroupOrigin(currentRoom, currentFloor);
+    const tileResult = computeSurfaceTiles(state, currentRoom, currentFloor, {
+      exclusions: getAllFloorExclusions(currentRoom),
+      includeDoorwayPatches: true,
+      effectiveSettings,
+      originOverride: patternGroupOrigin,
+      isRemovalMode,
+    });
+    if (tileResult.error) setLastTileError(tileResult.error);
     else setLastTileError(null);
 
-    if (avail.mp) {
-      // Check if room is in a pattern group and compute shared origin
-      const currentFloor = state.floors?.find(f => f.id === state.selectedFloorId);
-      const patternGroupOrigin = computePatternGroupOrigin(currentRoom, currentFloor);
-
-      // Get effective settings (from origin room if in pattern group)
-      const effectiveSettings = getEffectiveTileSettings(currentRoom, currentFloor);
-
-      // Extend available area through doorway openings for continuous floor tiles
-      let extendedMP = avail.mp;
-      const doorwayPatches = computeDoorwayFloorPatches(currentRoom, currentFloor, null, "multipolygon");
-      for (const patch of doorwayPatches) {
-        try {
-          extendedMP = polygonClipping.union(extendedMP, patch);
-        } catch (_) { /* ignore degenerate patches */ }
-      }
-
-      const t = tilesForPreview(state, extendedMP, isRemovalMode, false, currentFloor, { originOverride: patternGroupOrigin, effectiveSettings });
-      if (t.error) setLastTileError(t.error);
-      else setLastTileError(null);
-
-      previewTiles = t.tiles;
+    if (tileResult.tiles.length > 0 || !tileResult.error) {
+      console.log(`[render:2D-room] room=${currentRoom?.id} tiles=${tileResult.tiles.length} error=${tileResult.error || 'none'}`);
+      previewTiles = tileResult.tiles;
 
       const g = svgEl("g", { opacity: 1, "pointer-events": isRemovalMode ? "auto" : "none" });
       svg.appendChild(g);
@@ -2034,7 +2024,7 @@ export function renderPlanSvg({
       const groutHex = groutWidth > 0 ? (effectiveSettings.grout?.colorHex || "#ffffff") : "#ffffff";
       const groutRgb = hexToRgb(groutHex);
 
-    for (const tile of t.tiles) {
+    for (const tile of tileResult.tiles) {
       const isExcluded = tile.excluded;
       const attrs = {
         d: tile.d,
@@ -3180,37 +3170,34 @@ export function renderFloorCanvas({
       const effectiveTile = effectiveSettings.tile;
       if (state.view?.showFloorTiles && effectiveTile?.widthCm > 0 && effectiveTile?.heightCm > 0) {
         try {
-          // Compute available area (room polygon minus exclusions)
-          const avail = computeAvailableArea(room, getAllFloorExclusions(room));
-          if (avail.mp) {
-            // Extend available area through doorway openings for continuous floor tiles
-            let extendedMP = avail.mp;
-            const doorwayPatches = computeDoorwayFloorPatches(room, floor, null, "multipolygon");
-            for (const patch of doorwayPatches) {
-              try {
-                extendedMP = polygonClipping.union(extendedMP, patch);
-              } catch (_) { /* ignore degenerate patches */ }
+          const tileResult = computeSurfaceTiles(
+            { ...state, selectedRoomId: room.id },
+            room,
+            floor,
+            {
+              exclusions: getAllFloorExclusions(room),
+              includeDoorwayPatches: true,
+              effectiveSettings,
+              originOverride: computePatternGroupOrigin(room, floor),
+              isRemovalMode: false,
             }
+          );
+          console.log(`[render:2D-floor] room=${room.id} tiles=${tileResult.tiles.length}`);
 
-            const roomState = { ...state, selectedRoomId: room.id };
-            // Use shared origin for pattern group
-            const patternGroupOrigin = computePatternGroupOrigin(room, floor);
-            const result = tilesForPreview(roomState, extendedMP, room, false, floor, { originOverride: patternGroupOrigin, effectiveSettings });
-            const groutColor = effectiveSettings.grout?.colorHex || "#ffffff";
+          if (tileResult.error) {
+            console.warn(`Floor tiles error for room ${room.name || room.id}:`, tileResult.error);
+          }
 
-            if (result.error) {
-              console.warn(`Floor tiles error for room ${room.name || room.id}:`, result.error);
-            }
-
+          if (tileResult.tiles.length > 0) {
             // Create a group for tiles
             const tilesGroup = svgEl("g", { opacity: 0.8 });
 
-            for (const tile of (result.tiles || []).slice(0, 1000)) { // Limit tiles for performance
+            for (const tile of tileResult.tiles.slice(0, 1000)) { // Limit tiles for performance
               if (!tile.d) continue;
               tilesGroup.appendChild(svgEl("path", {
                 d: tile.d,
                 fill: "rgba(100, 116, 139, 0.5)",
-                stroke: groutColor,
+                stroke: tileResult.groutColor,
                 "stroke-width": effectiveSettings.grout?.widthCm || 0.2
               }));
             }

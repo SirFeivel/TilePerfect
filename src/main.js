@@ -15,7 +15,7 @@ import { initFullscreen } from "./fullscreen.js";
 import polygonClipping from "polygon-clipping";
 import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts } from "./geometry.js";
 import { getRoomAbsoluteBounds, findPositionOnFreeEdge, validateFloorConnectivity, subtractOverlappingAreas } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, wallSurfaceToTileableRegion, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, wallSurfaceToTileableRegion, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles } from "./walls.js";
 import { classifyAndExtendRooms } from "./envelope.js";
 import { wireQuickViewToggleHandlers, syncQuickViewToggleStates } from "./quick_view_toggles.js";
 import { createZoomPanController } from "./zoom-pan.js";
@@ -461,33 +461,21 @@ function renderSetupSection(state) {
 
 
 function prepareRoom3DData(state, room, floor, wallGeometry) {
-  const avail = computeAvailableArea(room, getAllFloorExclusions(room));
   const effectiveSettings = getEffectiveTileSettings(room, floor);
   const isRemovalMode = Boolean(state.view?.removalMode);
-  let tileResult = null;
-  let groutColor = effectiveSettings.grout?.colorHex || "#ffffff";
 
-  // Compute doorway floor patches (room-local coords) using unified function
+  // Compute doorway floor patches (room-local coords, "vertices" format) — needed for 3D mesh geometry
   const doorwayFloorPatches = computeDoorwayFloorPatches(room, floor, wallGeometry, "vertices");
 
-  if (avail.mp) {
-    // Extend available area through doorway openings for continuous floor tiles
-    let mp = avail.mp;
-    for (const patch of doorwayFloorPatches) {
-      const ring = patch.map(p => [p.x, p.y]);
-      ring.push([patch[0].x, patch[0].y]); // close ring
-      try {
-        mp = polygonClipping.union(mp, [[ring]]);
-      } catch (_) { /* ignore degenerate patches */ }
-    }
-
-    const origin = computePatternGroupOrigin(room, floor);
-    tileResult = tilesForPreview(state, mp, room, isRemovalMode, floor, {
-      originOverride: origin,
-      effectiveSettings
-    });
-    groutColor = effectiveSettings.grout?.colorHex || "#ffffff";
-  }
+  const tileResult = computeSurfaceTiles(state, room, floor, {
+    exclusions: getAllFloorExclusions(room),
+    includeDoorwayPatches: true,
+    wallGeometry,
+    effectiveSettings,
+    originOverride: computePatternGroupOrigin(room, floor),
+    isRemovalMode,
+  });
+  console.log(`[main:3D-room] room=${room.id} tiles=${tileResult.tiles.length} error=${tileResult.error || 'none'}`);
 
   // Pre-compute surface contacts for all walls in this floor touching this room's objects
   const allSurfaceContacts = (floor?.walls || []).flatMap(w => computeSurfaceContacts(room, w));
@@ -565,17 +553,14 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
         pattern: surf.pattern || { type: "grid", bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0 },
         exclusions: faceContactExclusions,
       };
-      const faceAvail = computeAvailableArea(region, faceContactExclusions);
-      if (faceAvail.mp) {
-        const result = tilesForPreview(state, faceAvail.mp, region, isRemovalMode, floor, {
-          effectiveSettings: { tile: surf.tile, grout: region.grout, pattern: region.pattern },
-        });
-        faceTiles[surf.face] = {
-          tiles: result?.tiles || [],
-          groutColor: region.grout.colorHex || "#ffffff",
-        };
-
-      }
+      const faceTileResult = computeSurfaceTiles(state, region, floor, {
+        exclusions: faceContactExclusions,
+        includeDoorwayPatches: false,
+        effectiveSettings: { tile: surf.tile, grout: region.grout, pattern: region.pattern },
+        isRemovalMode,
+      });
+      faceTiles[surf.face] = { tiles: faceTileResult.tiles, groutColor: faceTileResult.groutColor };
+      console.log(`[main:3D-face] obj=${obj.id} face=${surf.face} tiles=${faceTileResult.tiles.length}`);
     }
     return { ...obj, faceTiles };
   });
@@ -584,9 +569,9 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     id: room.id,
     polygonVertices: room.polygonVertices,
     floorPosition: room.floorPosition || { x: 0, y: 0 },
-    floorTiles: tileResult?.tiles || [],
+    floorTiles: tileResult.tiles,
     floorExclusions: getAllFloorExclusions(room),
-    groutColor,
+    groutColor: tileResult.groutColor,
     doorwayFloorPatches,
     objects3d: objects3dWithTiles,
   };
@@ -651,13 +636,16 @@ function prepareFloorWallData(state, floor, wallGeometry) {
       console.log(`[surface-contact] wall=${wall.id} surf=${idx}: tile=${!!surface.tile} excl=${(region.exclusions||[]).length}`);
       if (surface.tile) {
         const contactExclCount = (region.exclusions || []).filter(e => e._isContact).length;
-        const avail = computeAvailableArea(region, region.exclusions || []);
-        const result = avail.mp ? tilesForPreview(state, avail.mp, region, isRemovalMode, floor, {
-            effectiveSettings: { tile: region.tile, grout: region.grout, pattern: region.pattern },
-          }) : null;
-        tiles = result?.tiles || [];
+        const wallTileResult = computeSurfaceTiles(state, region, floor, {
+          exclusions: region.exclusions || [],
+          includeDoorwayPatches: false,
+          effectiveSettings: { tile: region.tile, grout: region.grout, pattern: region.pattern },
+          isRemovalMode,
+        });
+        tiles = wallTileResult.tiles;
+        console.log(`[main:3D-wall] wall=${wall.id} surf=${idx} tiles=${wallTileResult.tiles.length} error=${wallTileResult.error || 'none'}`);
         if (contactExclCount > 0) {
-          console.log(`[surface-contact] wall=${wall.id} surface=${idx}: contactExcl=${contactExclCount} availPoly=${avail.mp?.length ?? 0} tileCount=${tiles.length}`);
+          console.log(`[surface-contact] wall=${wall.id} surface=${idx}: contactExcl=${contactExclCount} tileCount=${tiles.length}`);
         }
       }
 
