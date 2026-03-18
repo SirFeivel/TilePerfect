@@ -176,6 +176,36 @@ export function createObjects3DController({
     commit(t('objects3d.added'), next);
   }
 
+  function addCylinder() {
+    const state = getState();
+    const room = getCurrentRoom(state);
+    if (!room) return;
+
+    const bounds = getRoomBounds(room);
+    const w = bounds.width;
+    const h = bounds.height;
+    const objCount = (room.objects3d || []).length;
+    const obj = {
+      id: uuid(),
+      type: 'cylinder',
+      label: `${t('objects3d.object')} ${objCount + 1}`,
+      cx: bounds.minX + w * 0.5,
+      cy: bounds.minY + h * 0.5,
+      r: Math.max(5, Math.min(w, h) * 0.1),
+      heightCm: 100,
+      skirtingEnabled: true,
+    };
+    console.log(`[objects3d:addCylinder] cx=${obj.cx.toFixed(1)} cy=${obj.cy.toFixed(1)} r=${obj.r.toFixed(1)}`);
+
+    const next = deepClone(state);
+    const nextRoom = getCurrentRoom(next);
+    if (!nextRoom) return;
+
+    nextRoom.objects3d.push(obj);
+    setSelectedId(obj.id);
+    commit(t('objects3d.added'), next);
+  }
+
   function addFreeform(vertices) {
     if (!vertices || vertices.length < 3) return;
 
@@ -251,6 +281,10 @@ export function createObjects3DController({
       cur.p2.y = readNum('obj3dP2Y', cur.p2.y);
       cur.p3.x = readNum('obj3dP3X', cur.p3.x);
       cur.p3.y = readNum('obj3dP3Y', cur.p3.y);
+    } else if (cur.type === 'cylinder') {
+      cur.cx = readNum('obj3dCX', cur.cx);
+      cur.cy = readNum('obj3dCY', cur.cy);
+      cur.r = Math.max(0.1, readNum('obj3dRadius', cur.r));
     } else if (cur.type !== 'freeform') {
       cur.x = readNum('obj3dX', cur.x);
       cur.y = readNum('obj3dY', cur.y);
@@ -289,6 +323,7 @@ export function createObjects3DController({
     addRect,
     addTri,
     addFreeform,
+    addCylinder,
     deleteSelectedObj,
     commitObjProps,
     updateSurface,

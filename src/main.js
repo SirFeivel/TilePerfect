@@ -3538,6 +3538,8 @@ function updateAllTranslations() {
         obj3dCtrl.addRect();
       } else if (type === "tri") {
         obj3dCtrl.addTri();
+      } else if (type === "cylinder") {
+        obj3dCtrl.addCylinder();
       } else if (type === "freeform") {
         const freeformBtn = item;
         freeformBtn.classList.add("active");
@@ -3580,6 +3582,9 @@ function updateAllTranslations() {
   });
   document.getElementById("btnAddObj3dTri")?.addEventListener("click", () => {
     obj3dCtrl.addTri();
+  });
+  document.getElementById("btnAddObj3dCylinder")?.addEventListener("click", () => {
+    obj3dCtrl.addCylinder();
   });
   document.getElementById("btnAddObj3dFreeform")?.addEventListener("click", () => {
     const btn = document.getElementById("btnAddObj3dFreeform");
@@ -4320,6 +4325,7 @@ function updateAllTranslations() {
       document.getElementById("quickAddObj3d"),
       document.getElementById("btnAddObj3dRect"),
       document.getElementById("btnAddObj3dTri"),
+      document.getElementById("btnAddObj3dCylinder"),
       document.getElementById("btnAddObj3dFreeform"),
     ];
     for (const btn of obj3dAddBtns) {

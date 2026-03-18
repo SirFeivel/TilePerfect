@@ -928,6 +928,12 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
       return [obj.p1, obj.p2, obj.p3];
     } else if (obj.type === 'freeform' && obj.vertices?.length >= 3) {
       return obj.vertices;
+    } else if (obj.type === 'cylinder') {
+      const steps = 24;
+      return Array.from({ length: steps }, (_, i) => {
+        const a = (i / steps) * Math.PI * 2;
+        return { x: obj.cx + Math.cos(a) * obj.r, y: obj.cy + Math.sin(a) * obj.r };
+      });
     } else {
       // rect
       return [

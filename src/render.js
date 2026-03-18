@@ -911,6 +911,10 @@ export function renderObj3dProps({
     field(t("exclProps.p2y"), "obj3dP2Y", obj.p2.y, "0.01");
     field(t("exclProps.p3x"), "obj3dP3X", obj.p3.x, "0.01");
     field(t("exclProps.p3y"), "obj3dP3Y", obj.p3.y, "0.01");
+  } else if (obj.type === "cylinder") {
+    field(t("exclProps.centerX"), "obj3dCX", obj.cx, "0.01");
+    field(t("exclProps.centerY"), "obj3dCY", obj.cy, "0.01");
+    field(t("objects3d.radius"), "obj3dRadius", obj.r, "0.01");
   } else if (obj.type === "freeform" && obj.vertices) {
     const infoDiv = document.createElement("div");
     infoDiv.className = "field span2";
@@ -963,6 +967,8 @@ function _renderPlanObjects3d(svg, room, { selectedObj3dId, onObj3dPointerDown, 
     } else if (obj.type === "tri") {
       const pts = `${obj.p1.x},${obj.p1.y} ${obj.p2.x},${obj.p2.y} ${obj.p3.x},${obj.p3.y}`;
       shapeEl = svgEl("polygon", { ...common, points: pts });
+    } else if (obj.type === "cylinder") {
+      shapeEl = svgEl("circle", { ...common, cx: obj.cx, cy: obj.cy, r: obj.r });
     } else {
       continue;
     }
@@ -1025,6 +1031,13 @@ function _renderPlanObjects3d(svg, room, { selectedObj3dId, onObj3dPointerDown, 
           handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
           gObj.appendChild(handle);
         });
+      } else if (obj.type === "cylinder") {
+        const handle = svgEl("circle", {
+          ...handleStyle, cx: obj.cx + obj.r, cy: obj.cy, r: handleRadius,
+          cursor: "ew-resize", "data-resize-handle": "r"
+        });
+        handle.addEventListener("pointerdown", onObj3dResizeHandlePointerDown);
+        gObj.appendChild(handle);
       }
     }
   }

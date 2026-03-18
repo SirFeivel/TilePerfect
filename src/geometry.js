@@ -604,6 +604,12 @@ export function getAllFloorExclusions(room) {
         vertices: obj.vertices,
         skirtingEnabled: obj.skirtingEnabled, _isObject3d: true
       });
+    } else if (obj.type === 'cylinder') {
+      excls.push({
+        type: 'circle', id: obj.id,
+        cx: obj.cx, cy: obj.cy, r: obj.r,
+        skirtingEnabled: obj.skirtingEnabled, _isObject3d: true
+      });
     } else {
       excls.push({
         type: 'rect', id: obj.id,
@@ -823,6 +829,14 @@ export function computeSurfacePolygons(room) {
  * @returns {Array} [{ p1, p2, face }]
  */
 export function getObjFootprintEdges(obj) {
+  if (obj.type === 'cylinder') {
+    const steps = 16;
+    const verts = Array.from({ length: steps }, (_, i) => {
+      const a = (i / steps) * Math.PI * 2;
+      return { x: obj.cx + Math.cos(a) * obj.r, y: obj.cy + Math.sin(a) * obj.r };
+    });
+    return verts.map((v, i) => ({ p1: v, p2: verts[(i + 1) % steps], face: `side-${i}` }));
+  }
   if (obj.type === 'rect') {
     const { x, y, w, h } = obj;
     return [
