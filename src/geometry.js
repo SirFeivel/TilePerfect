@@ -712,6 +712,108 @@ export function computeAvailableArea(room, exclusions) {
 }
 
 /**
+ * Validate that a freeform exclusion in `room` (after a drag/resize) does not
+ * overlap with any other freeform exclusion and stays within the room boundary.
+ *
+ * Returns { valid: true } or { valid: false, reason: string }.
+ * Only checks freeform exclusions — rect/circle/tri exclusions are not zones
+ * and do not participate in mutual-exclusivity enforcement.
+ */
+export function validateFreeformDrop(room, exclId) {
+  const moved = room.exclusions?.find(e => e.id === exclId);
+  if (!moved || moved.type !== 'freeform' || !moved.vertices?.length) {
+    return { valid: true }; // not a freeform — skip
+  }
+  const movedMp = exclusionToPolygon(moved);
+  if (!movedMp) return { valid: true };
+
+  // 1. Must be fully within room boundary
+  const roomMp = roomPolygon(room);
+  try {
+    const outside = polygonClipping.difference(movedMp, roomMp);
+    if (outside.length > 0) {
+      console.warn(`[geometry:validateFreeformDrop] excl=${exclId} outside room boundary`);
+      return { valid: false, reason: 'outside-room' };
+    }
+  } catch (e) {
+    return { valid: false, reason: String(e?.message || e) };
+  }
+
+  // 2. Must not overlap any other freeform exclusion
+  const others = (room.exclusions || []).filter(
+    e => e.id !== exclId && e.type === 'freeform' && e.vertices?.length >= 3
+  );
+  for (const other of others) {
+    const otherMp = exclusionToPolygon(other);
+    if (!otherMp) continue;
+    try {
+      const intersection = polygonClipping.intersection(movedMp, otherMp);
+      if (intersection.length > 0) {
+        console.warn(`[geometry:validateFreeformDrop] excl=${exclId} overlaps excl=${other.id}`);
+        return { valid: false, reason: `overlaps-${other.id}` };
+      }
+    } catch (e) {
+      return { valid: false, reason: String(e?.message || e) };
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Ray-casting point-in-polygon test.
+ * @param {{x:number,y:number}} pt
+ * @param {{x:number,y:number}[]} vertices — open polygon (last point ≠ first)
+ * @returns {boolean}
+ */
+export function pointInPolygon(pt, vertices) {
+  let inside = false;
+  const n = vertices.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = vertices[i].x, yi = vertices[i].y;
+    const xj = vertices[j].x, yj = vertices[j].y;
+    if (((yi > pt.y) !== (yj > pt.y)) &&
+        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Returns the polygon set for a floor room: the uncovered area (room minus all
+ * exclusions, possibly multi-polygon) plus each freeform exclusion as a zone.
+ *
+ * Each entry: { id, type: 'uncovered'|'zone', exclId?: string, vertices: [{x,y}] }
+ *
+ * Only freeform exclusions become zone polygons (they're the ones created by the
+ * divider tool and represent independently-tileable sub-surfaces).
+ */
+export function computeSurfacePolygons(room) {
+  const allExcls = room.exclusions || [];
+  const freeformExcls = allExcls.filter(e => e.type === 'freeform' && e.vertices?.length >= 3);
+
+  const { mp: uncoveredMp } = computeAvailableArea(room, allExcls);
+  const result = [];
+
+  if (uncoveredMp) {
+    uncoveredMp.forEach((poly, idx) => {
+      const verts = poly[0].slice(0, -1).map(([x, y]) => ({ x, y }));
+      if (verts.length >= 3) {
+        result.push({ id: `uncovered-${idx}`, type: 'uncovered', vertices: verts });
+      }
+    });
+  }
+
+  for (const excl of freeformExcls) {
+    result.push({ id: excl.id, type: 'zone', exclId: excl.id, vertices: excl.vertices });
+  }
+
+  console.log(`[geometry:computeSurfacePolygons] room=${room.id} uncovered=${result.filter(p => p.type === 'uncovered').length} zones=${freeformExcls.length}`);
+  return result;
+}
+
+/**
  * Returns the footprint edges of a 3D object in room-local 2D coords,
  * each tagged with its face name matching createBoxFaceMapper conventions.
  * @param {Object} obj - 3D object (rect/tri/freeform)

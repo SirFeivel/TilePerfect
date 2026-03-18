@@ -239,6 +239,8 @@ export function createExclusionDragController({
   // Optional: override target resolution for non-floor surfaces (e.g. wall surfaces)
   getTarget = null,
   getTargetBounds = null,
+  // Optional: (nextState, exclId) => boolean — return false to abort commit (revert)
+  validateDrop = null,
 }) {
   const resolveTarget = (s) => getTarget ? getTarget(s) : getCurrentRoom(s);
   const resolveBounds = (s) => {
@@ -337,8 +339,16 @@ export function createExclusionDragController({
         }
       }
 
-      // Commit triggers full render with correct tile calculations
-      commit(getMoveLabel(), finalState);
+      // Validate drop before committing (mutual exclusivity enforcement)
+      if (validateDrop && !validateDrop(finalState, drag.id)) {
+        console.warn(`[drag:move] drop rejected for excl=${drag.id} — reverting`);
+        const elements = findExclElements(drag.id);
+        elements.forEach(el => el.removeAttribute("transform"));
+        if (render) render();
+      } else {
+        // Commit triggers full render with correct tile calculations
+        commit(getMoveLabel(), finalState);
+      }
     } else {
       // No movement - selection already set in pointerdown, just trigger full render
       const elements = findExclElements(drag.id);
@@ -648,7 +658,13 @@ export function createExclusionDragController({
       }
 
       const label = getResizeLabel ? getResizeLabel() : "Resized exclusion";
-      commit(label, finalState);
+      // Validate resize before committing (mutual exclusivity enforcement)
+      if (validateDrop && !validateDrop(finalState, resize.id)) {
+        console.warn(`[drag:resize] drop rejected for excl=${resize.id} — reverting`);
+        if (render) render();
+      } else {
+        commit(label, finalState);
+      }
     } else {
       // No resize - trigger render to restore
       render();

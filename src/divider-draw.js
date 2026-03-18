@@ -1,36 +1,59 @@
 // src/divider-draw.js — Draw controller for surface divider lines
 import { pointerToSvgXY } from './svg-coords.js';
 import { findNearestEdgePoint } from './polygon-draw.js';
+import { pointInPolygon } from './geometry.js';
 
-export function createDividerDrawController({ getSvg, getPolygonVertices, onComplete, onCancel }) {
-  // getPolygonVertices() → [{x,y}] vertices of current surface polygon
+/**
+ * createDividerDrawController
+ *
+ * getSvg()            → SVG element
+ * getSurfacePolygons() → [{id, type:'uncovered'|'zone', exclId?, vertices:[{x,y}]}]
+ *                        All snap-eligible polygons: uncovered area pieces + zones.
+ * onComplete({p1, p2, targetPolygon}) → called when both clicks land
+ * onCancel()          → called on Escape / right-click
+ *
+ * Behaviour:
+ *  Phase 0 (before click1): raw mouse position determines the active polygon via
+ *    point-in-polygon; highlight shows; snap dot is on active polygon's nearest edge.
+ *  Phase 1 (after click1): target polygon locked; snap restricted to its edges only.
+ *  Shift: constrains line direction to 15° increments using ray-polygon intersection.
+ */
+export function createDividerDrawController({ getSvg, getSurfacePolygons, onComplete, onCancel }) {
   let active = false;
   let startPt = null;
+  let targetPolygon = null; // locked after click1
   let shiftHeld = false;
-  let snapDot = null;    // SVG circle: green dot on nearest edge
-  let previewLine = null; // SVG dashed line from startPt to current position
 
-  function getEdges() {
-    const verts = getPolygonVertices();
-    if (!verts?.length) return [];
-    return verts.map((v, i) => ({
-      roomId: 'surface',
-      edge: { p1: v, p2: verts[(i + 1) % verts.length] },
+  // SVG overlay elements
+  let snapDot = null;
+  let previewLine = null;
+  let highlight = null; // polygon fill to show active/target polygon
+
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  function polyToEdges(poly) {
+    const v = poly.vertices;
+    return v.map((pt, i) => ({
+      roomId: poly.id,
+      edge: { p1: pt, p2: v[(i + 1) % v.length] },
     }));
   }
 
-  // Always returns nearest edge point (no threshold gate).
-  function getNearestEdge(rawPt) {
-    return findNearestEdgePoint(rawPt, getEdges());
+  function allEdges() {
+    return getSurfacePolygons().flatMap(polyToEdges);
   }
 
-  // Find first intersection of a ray from origin at angleRad with the polygon boundary.
-  function rayPolyIntersect(origin, angleRad, verts) {
-    if (!verts?.length) return null;
+  function targetEdges() {
+    return targetPolygon ? polyToEdges(targetPolygon) : allEdges();
+  }
+
+  // Find first intersection of a ray from origin at angleRad with a polygon boundary.
+  function rayPolyIntersect(origin, angleRad, vertices) {
+    if (!vertices?.length) return null;
     const cx = Math.cos(angleRad), cy = Math.sin(angleRad);
     let bestT = Infinity, best = null;
-    for (let i = 0; i < verts.length; i++) {
-      const a = verts[i], b = verts[(i + 1) % verts.length];
+    for (let i = 0; i < vertices.length; i++) {
+      const a = vertices[i], b = vertices[(i + 1) % vertices.length];
       const ex = b.x - a.x, ey = b.y - a.y;
       const denom = cx * ey - cy * ex;
       if (Math.abs(denom) < 1e-10) continue;
@@ -45,13 +68,29 @@ export function createDividerDrawController({ getSvg, getPolygonVertices, onComp
     return best;
   }
 
-  // Constrain direction from `from` toward `rawPt` to nearest 15° increment.
-  // Returns the constrained angle in radians, or null if distance is negligible.
   function constrainedAngle(from, rawPt) {
     const dx = rawPt.x - from.x, dy = rawPt.y - from.y;
     if (Math.hypot(dx, dy) < 0.01) return null;
-    const angle = Math.atan2(dy, dx);
-    return Math.round(angle / (Math.PI / 12)) * (Math.PI / 12); // 15° increments
+    return Math.round(Math.atan2(dy, dx) / (Math.PI / 12)) * (Math.PI / 12);
+  }
+
+  // Find which polygon in the set contains rawPt; null if none.
+  function findActivePoly(rawPt) {
+    const polys = getSurfacePolygons();
+    for (const p of polys) {
+      if (pointInPolygon(rawPt, p.vertices)) return p;
+    }
+    return null;
+  }
+
+  // ── SVG element management ──────────────────────────────────────────────────
+
+  function ensureHighlight() {
+    if (highlight) return highlight;
+    highlight = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    highlight.setAttribute('pointer-events', 'none');
+    getSvg().appendChild(highlight);
+    return highlight;
   }
 
   function ensureSnapDot() {
@@ -77,34 +116,69 @@ export function createDividerDrawController({ getSvg, getPolygonVertices, onComp
     return previewLine;
   }
 
-  // Re-append overlay elements after a render clears the SVG.
+  function updateHighlight(poly, locked) {
+    if (!poly) {
+      if (highlight) highlight.style.display = 'none';
+      return;
+    }
+    const d = 'M ' + poly.vertices.map(v => `${v.x},${v.y}`).join(' L ') + ' Z';
+    const el = ensureHighlight();
+    el.setAttribute('d', d);
+    if (locked) {
+      el.setAttribute('fill', 'rgba(34,197,94,0.10)');
+      el.setAttribute('stroke', 'rgba(34,197,94,0.50)');
+    } else {
+      el.setAttribute('fill', 'rgba(99,102,241,0.08)');
+      el.setAttribute('stroke', 'rgba(99,102,241,0.35)');
+    }
+    el.setAttribute('stroke-width', '1');
+    el.setAttribute('stroke-dasharray', '3 2');
+    el.style.display = '';
+  }
+
   function reattach() {
     if (!active) return;
     const svg = getSvg();
-    if (snapDot) svg.appendChild(snapDot);
+    if (highlight) svg.appendChild(highlight);
     if (previewLine) svg.appendChild(previewLine);
+    if (snapDot) svg.appendChild(snapDot);
   }
 
-  function computeDotAndPreview(rawPt) {
-    const verts = getPolygonVertices();
-    if (startPt && shiftHeld) {
-      const ang = constrainedAngle(startPt, rawPt);
-      if (ang !== null) {
-        const intersection = rayPolyIntersect(startPt, ang, verts);
-        const dotPt = intersection || getNearestEdge(rawPt)?.point;
-        const previewEnd = intersection || rawPt;
-        console.log(`[divider-draw:move-shift] ang=${(ang * 180 / Math.PI).toFixed(0)}° dot=(${dotPt?.x?.toFixed(1)},${dotPt?.y?.toFixed(1)})`);
-        return { dotPt, previewEnd };
+  // ── core computation ────────────────────────────────────────────────────────
+
+  function computeFrame(rawPt) {
+    const currentPoly = targetPolygon || findActivePoly(rawPt);
+
+    let dotPt = null, previewEnd = null;
+
+    if (currentPoly) {
+      if (startPt && shiftHeld) {
+        const ang = constrainedAngle(startPt, rawPt);
+        if (ang !== null) {
+          const intersection = rayPolyIntersect(startPt, ang, currentPoly.vertices);
+          dotPt = intersection;
+          previewEnd = intersection || rawPt;
+          console.log(`[divider-draw:shift] ang=${(ang * 180 / Math.PI).toFixed(0)}° hit=${!!intersection}`);
+        }
+      }
+      if (!dotPt) {
+        const edges = targetPolygon ? targetEdges() : polyToEdges(currentPoly);
+        const nr = findNearestEdgePoint(rawPt, edges);
+        dotPt = nr?.point || null;
+        previewEnd = dotPt;
       }
     }
-    // Free mode: snap dot at nearest edge point (always valid, always green)
-    const nr = getNearestEdge(rawPt);
-    return { dotPt: nr?.point, previewEnd: nr?.point };
+
+    return { currentPoly, dotPt, previewEnd };
   }
+
+  // ── event handlers ──────────────────────────────────────────────────────────
 
   function onPointerMove(e) {
     const rawPt = pointerToSvgXY(getSvg(), e.clientX, e.clientY);
-    const { dotPt, previewEnd } = computeDotAndPreview(rawPt);
+    const { currentPoly, dotPt, previewEnd } = computeFrame(rawPt);
+
+    updateHighlight(currentPoly, !!targetPolygon);
 
     if (dotPt) {
       const dot = ensureSnapDot();
@@ -128,20 +202,21 @@ export function createDividerDrawController({ getSvg, getPolygonVertices, onComp
   function onPointerDown(e) {
     if (e.button !== 0) return;
     const rawPt = pointerToSvgXY(getSvg(), e.clientX, e.clientY);
-    const { dotPt } = computeDotAndPreview(rawPt);
-    const snapped = dotPt;
-    if (!snapped) return;
+    const { currentPoly, dotPt } = computeFrame(rawPt);
+    if (!dotPt || !currentPoly) return;
 
     if (!startPt) {
-      startPt = snapped;
-      console.log(`[divider-draw:click1] startPt=(${snapped.x.toFixed(1)},${snapped.y.toFixed(1)})`);
+      startPt = dotPt;
+      targetPolygon = currentPoly;
+      console.log(`[divider-draw:click1] poly=${currentPoly.id} type=${currentPoly.type} startPt=(${dotPt.x.toFixed(1)},${dotPt.y.toFixed(1)})`);
     } else {
-      const p1 = startPt, p2 = snapped;
+      const p1 = startPt, p2 = dotPt;
       const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-      console.log(`[divider-draw:click2] p1=(${p1.x.toFixed(1)},${p1.y.toFixed(1)}) p2=(${p2.x.toFixed(1)},${p2.y.toFixed(1)}) dist=${dist.toFixed(1)}cm`);
+      console.log(`[divider-draw:click2] p1=(${p1.x.toFixed(1)},${p1.y.toFixed(1)}) p2=(${p2.x.toFixed(1)},${p2.y.toFixed(1)}) dist=${dist.toFixed(1)}cm targetPoly=${targetPolygon.id}`);
       if (dist > 0.1) {
+        const tp = targetPolygon;
         cleanup();
-        onComplete({ p1, p2 });
+        onComplete({ p1, p2, targetPolygon: tp });
       }
     }
   }
@@ -163,9 +238,11 @@ export function createDividerDrawController({ getSvg, getPolygonVertices, onComp
 
   function cleanup() {
     startPt = null;
+    targetPolygon = null;
     shiftHeld = false;
     snapDot?.remove(); snapDot = null;
     previewLine?.remove(); previewLine = null;
+    highlight?.remove(); highlight = null;
   }
 
   function start() {

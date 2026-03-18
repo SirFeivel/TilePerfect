@@ -13,7 +13,7 @@ import { t, setLanguage, getLanguage } from "./i18n.js";
 import { initMainTabs } from "./tabs.js";
 import { initFullscreen } from "./fullscreen.js";
 import polygonClipping from "polygon-clipping";
-import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts, splitPolygonByLine } from "./geometry.js";
+import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts, splitPolygonByLine, computeSurfacePolygons, validateFreeformDrop } from "./geometry.js";
 import { getRoomAbsoluteBounds, findPositionOnFreeEdge, validateFloorConnectivity, subtractOverlappingAreas } from "./floor_geometry.js";
 import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
 import { classifyAndExtendRooms } from "./envelope.js";
@@ -1875,45 +1875,76 @@ const obj3dCtrl = createObjects3DController({
   setSelectedId: setSelectedObj3dIdOnly
 });
 
-// Returns polygonVertices for the current split target.
-// For wall surfaces, polygonVertices are not stored in state — computed via prepareWallSurface.
-// For floor rooms, taken directly from room.polygonVertices.
-function getTargetPolygonVertices() {
+// Returns the surface polygon set for the current split target.
+// Wall surfaces don't have zones yet — represented as a single uncovered polygon.
+// Floor rooms use computeSurfacePolygons to include uncovered area + existing zones.
+function getTargetSurfacePolygons() {
   const state = store.getState();
   const floor = getCurrentFloor(state);
   const room = getCurrentRoom(state);
-  if (!room || !floor) return null;
+  if (!room || !floor) return [];
   if (state.selectedWallId) {
     const wall = floor.walls?.find(w => w.id === state.selectedWallId);
     const surfIdx = wall?.surfaces?.findIndex(s => s.roomId === state.selectedRoomId) ?? -1;
-    if (surfIdx < 0) return null;
+    if (surfIdx < 0) return [];
     const region = prepareWallSurface(wall, surfIdx, room, floor);
-    console.log(`[dividers:getTargetPolygonVertices] wall surface verts=${region?.polygonVertices?.length ?? 0}`);
-    return region?.polygonVertices || null;
+    if (!region?.polygonVertices?.length) return [];
+    console.log(`[dividers:getSurfacePolygons] wall surface verts=${region.polygonVertices.length}`);
+    return [{ id: 'wall-surface', type: 'uncovered', vertices: region.polygonVertices }];
   }
-  console.log(`[dividers:getTargetPolygonVertices] floor room verts=${room.polygonVertices?.length ?? 0}`);
-  return room.polygonVertices || null;
+  const polys = computeSurfacePolygons(room);
+  console.log(`[dividers:getSurfacePolygons] floor room polys=${polys.length}`);
+  return polys;
+}
+
+function polyArea(verts) {
+  let a = 0;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++)
+    a += (verts[j].x + verts[i].x) * (verts[j].y - verts[i].y);
+  return Math.abs(a) / 2;
 }
 
 const dividerDrawCtrl = createDividerDrawController({
   getSvg: () => document.getElementById("planSvg"),
-  getPolygonVertices: getTargetPolygonVertices,
-  onComplete: ({ p1, p2 }) => {
+  getSurfacePolygons: getTargetSurfacePolygons,
+  onComplete: ({ p1, p2, targetPolygon }) => {
     dividerDrawCtrl.stop();
     document.getElementById("quickDivider")?.classList.remove("active");
-    const verts = getTargetPolygonVertices();
-    if (!verts?.length) { console.warn("[divider-split:onComplete] no polygonVertices — skipping"); return; }
-    const polys = splitPolygonByLine(verts, p1, p2);
+    if (!targetPolygon?.vertices?.length) { console.warn("[divider-split:onComplete] no targetPolygon — skipping"); return; }
+    const polys = splitPolygonByLine(targetPolygon.vertices, p1, p2);
     if (!polys || polys.length < 2) { console.warn("[divider-split:onComplete] split produced <2 polygons — skipping"); return; }
-    const areas = polys.map(p => {
-      let a = 0;
-      for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += (p[j].x + p[i].x) * (p[j].y - p[i].y);
-      return Math.abs(a) / 2;
-    });
+    const areas = polys.map(polyArea);
     const smallerIdx = areas[0] <= areas[1] ? 0 : 1;
+    const largerIdx = 1 - smallerIdx;
     const smallerPoly = polys[smallerIdx];
-    console.log(`[divider-split:onComplete] areas=[${areas.map(a => a.toFixed(0)).join(",")}] smallerIdx=${smallerIdx} verts=${smallerPoly.length}`);
-    excl.addFreeform(smallerPoly);
+    const largerPoly = polys[largerIdx];
+    console.log(`[divider-split:onComplete] target=${targetPolygon.id} type=${targetPolygon.type} areas=[${areas.map(a => a.toFixed(0)).join(",")}] smallerIdx=${smallerIdx}`);
+
+    if (targetPolygon.type === 'uncovered') {
+      // Splitting the uncovered area: just add a new blank zone
+      excl.addFreeform(smallerPoly);
+    } else {
+      // Splitting an existing zone: update that zone's vertices to the larger half,
+      // then add a new blank zone for the smaller half — single atomic commit.
+      const state = store.getState();
+      const room = getCurrentRoom(state);
+      if (!room) { console.warn("[divider-split:onComplete] no room — skipping zone split"); return; }
+      const newExclId = uuid();
+      const nextExcls = room.exclusions.map(e =>
+        e.id === targetPolygon.exclId ? { ...e, vertices: largerPoly } : e
+      ).concat([{ id: newExclId, type: 'freeform', label: '', vertices: smallerPoly }]);
+      const nextState = {
+        ...state,
+        floors: state.floors.map(f =>
+          f.id !== state.selectedFloorId ? f : {
+            ...f,
+            rooms: f.rooms.map(r => r.id !== state.selectedRoomId ? r : { ...r, exclusions: nextExcls }),
+          }
+        ),
+      };
+      console.log(`[divider-split:zoneSplit] updated exclId=${targetPolygon.exclId} largerVerts=${largerPoly.length} newExclId=${newExclId} smallerVerts=${smallerPoly.length}`);
+      store.commit("Split zone", nextState);
+    }
   },
   onCancel: () => {
     dividerDrawCtrl.stop();
@@ -1966,6 +1997,13 @@ const dragController = createExclusionDragController({
   },
   getTarget: getExclusionTarget,
   getTargetBounds: getExclusionTargetBounds,
+  validateDrop: (nextState, exclId) => {
+    const room = getCurrentRoom(nextState);
+    if (!room) return true;
+    const { valid, reason } = validateFreeformDrop(room, exclId);
+    if (!valid) console.warn(`[drag:validateDrop] rejected exclId=${exclId} reason=${reason}`);
+    return valid;
+  },
 });
 
 const obj3dDragCtrl = createObject3DDragController({

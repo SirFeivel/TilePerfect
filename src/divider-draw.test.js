@@ -46,7 +46,7 @@ describe("createDividerDrawController — draw flow", () => {
   afterEach(()  => { document.body.innerHTML = ""; });
 
   it("mousemove within 2cm of left edge → green snap dot at (0, 50)", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 1, 50); // 1cm from left edge x=0
     const dot = svg.querySelector("circle");
@@ -57,7 +57,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("mousemove 50cm from every edge → snap dot shown green at nearest edge", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 50, 50);
     const dot = svg.querySelector("circle");
@@ -69,7 +69,7 @@ describe("createDividerDrawController — draw flow", () => {
 
   it("click anywhere sets startPt by snapping to nearest edge", () => {
     let completed = false;
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => { completed = true; }, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => { completed = true; }, onCancel: () => {} });
     ctrl.start();
     // Click in the middle — snaps to nearest edge (sets startPt)
     move(svg, 50, 50);
@@ -81,7 +81,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("click1 on left edge sets startPt; no preview line yet", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 1, 50);
     down(svg, 1, 50); // click1
@@ -89,7 +89,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("after click1, mousemove anywhere → dashed preview line appears (including middle of room)", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 1, 50); down(svg, 1, 50); // click1
     move(svg, 50, 50);                  // move to middle of room — preview still shows
@@ -100,7 +100,7 @@ describe("createDividerDrawController — draw flow", () => {
 
   it("full two-click flow: left edge → right edge → onComplete with correct p1/p2", () => {
     let result = null;
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: (r) => { result = r; }, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: (r) => { result = r; }, onCancel: () => {} });
     ctrl.start();
     move(svg, 1,  50); down(svg, 1,  50); // click1: snaps to left edge (0, 50)
     move(svg, 99, 50); down(svg, 99, 50); // click2: snaps to right edge (100, 50)
@@ -113,7 +113,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("after onComplete, snap dot and preview line are removed from SVG", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 1, 50); down(svg, 1, 50);
     move(svg, 99, 50); down(svg, 99, 50);
@@ -123,7 +123,7 @@ describe("createDividerDrawController — draw flow", () => {
 
   it("Escape after click1 → onCancel called, dot and line removed", () => {
     let cancelled = false;
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => { cancelled = true; } });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => { cancelled = true; } });
     ctrl.start();
     move(svg, 1, 50); down(svg, 1, 50);
     move(svg, 99, 50);
@@ -134,7 +134,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("stop() mid-draw removes dot and preview line, isActive() → false", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     ctrl.start();
     move(svg, 1, 50); down(svg, 1, 50);
     move(svg, 99, 50);
@@ -145,7 +145,7 @@ describe("createDividerDrawController — draw flow", () => {
   });
 
   it("isActive() reflects start/stop state", () => {
-    const ctrl = createDividerDrawController({ getSvg: () => svg, getPolygonVertices: () => RECT_100, onComplete: () => {}, onCancel: () => {} });
+    const ctrl = createDividerDrawController({ getSvg: () => svg, getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }], onComplete: () => {}, onCancel: () => {} });
     expect(ctrl.isActive()).toBe(false);
     ctrl.start();
     expect(ctrl.isActive()).toBe(true);
@@ -181,9 +181,9 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
   // Replicates the split→addFreeform portion of the onComplete handler from main.js.
   // drawCtrl.stop() is excluded here: it's already tested in the draw controller suite above.
-  function buildOnComplete(getVerts, exclCtrl) {
-    return ({ p1, p2 }) => {
-      const verts = getVerts();
+  function buildOnComplete(exclCtrl) {
+    return ({ p1, p2, targetPolygon }) => {
+      const verts = targetPolygon?.vertices;
       if (!verts?.length) return;
       const polys = splitPolygonByLine(verts, p1, p2);
       if (!polys || polys.length < 2) return;
@@ -212,8 +212,8 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
-      onComplete: buildOnComplete(() => RECT_100, exclCtrl),
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
+      onComplete: buildOnComplete(exclCtrl),
       onCancel: () => {},
     });
 
@@ -243,8 +243,8 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
-      onComplete: buildOnComplete(() => RECT_100, exclCtrl),
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
+      onComplete: buildOnComplete(exclCtrl),
       onCancel: () => {},
     });
 
@@ -272,8 +272,8 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
-      onComplete: buildOnComplete(() => RECT_100, exclCtrl),
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
+      onComplete: buildOnComplete(exclCtrl),
       onCancel: () => {},
     });
 
@@ -302,8 +302,8 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
-      onComplete: buildOnComplete(() => RECT_100, exclCtrl),
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
+      onComplete: buildOnComplete(exclCtrl),
       onCancel: () => {},
     });
 
@@ -331,8 +331,8 @@ describe("divider draw → split → exclusion (full pipeline)", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
-      onComplete: buildOnComplete(() => RECT_100, exclCtrl),
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
+      onComplete: buildOnComplete(exclCtrl),
       onCancel: () => { cancelled = true; },
     });
 

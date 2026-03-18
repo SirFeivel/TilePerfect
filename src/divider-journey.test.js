@@ -112,9 +112,9 @@ const down = (el, x, y) => el.dispatchEvent(new PointerEvent("pointerdown", { cl
 const key  = (k)         => document.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
 
 // Replicates the split→addFreeform onComplete handler from main.js
-function buildOnComplete(getVerts, exclCtrl) {
-  return ({ p1, p2 }) => {
-    const verts = getVerts();
+function buildOnComplete(_unused, exclCtrl) {
+  return ({ p1, p2, targetPolygon }) => {
+    const verts = targetPolygon?.vertices;
     if (!verts?.length) return;
     const polys = splitPolygonByLine(verts, p1, p2);
     if (!polys || polys.length < 2) return;
@@ -157,7 +157,7 @@ describe("Journey 1: floor room — create, select, delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -187,7 +187,7 @@ describe("Journey 1: floor room — create, select, delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -212,7 +212,7 @@ describe("Journey 1: floor room — create, select, delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -238,7 +238,7 @@ describe("Journey 1: floor room — create, select, delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -292,7 +292,7 @@ describe("Journey 2: two dividers created, one deleted", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => state.floors[0].rooms[0].polygonVertices,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: state.floors[0].rooms[0].polygonVertices }],
       onComplete: buildOnComplete(() => state.floors[0].rooms[0].polygonVertices, exclCtrl),
       onCancel: () => {},
     });
@@ -326,7 +326,7 @@ describe("Journey 2: two dividers created, one deleted", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -362,7 +362,7 @@ describe("Journey 3: configure divider as sub-surface via DOM", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -492,7 +492,7 @@ describe("Journey 4: wall surface — create and delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => WALL_SURFACE,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: WALL_SURFACE }],
       onComplete: buildOnComplete(() => WALL_SURFACE, exclCtrl),
       onCancel: () => {},
     });
@@ -521,7 +521,7 @@ describe("Journey 4: wall surface — create and delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => WALL_SURFACE,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: WALL_SURFACE }],
       onComplete: buildOnComplete(() => WALL_SURFACE, exclCtrl),
       onCancel: () => {},
     });
@@ -548,7 +548,7 @@ describe("Journey 4: wall surface — create and delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => WALL_SURFACE,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: WALL_SURFACE }],
       onComplete: buildOnComplete(() => WALL_SURFACE, exclCtrl),
       onCancel: () => {},
     });
@@ -567,7 +567,7 @@ describe("Journey 4: wall surface — create and delete divider", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => WALL_SURFACE,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: WALL_SURFACE }],
       onComplete: () => {},
       onCancel: () => {},
     });
@@ -605,7 +605,7 @@ describe("Journey 5: Escape key cancels mid-draw, no state change", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => { cancelled = true; },
     });
@@ -634,7 +634,7 @@ describe("Journey 5: Escape key cancels mid-draw, no state change", () => {
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => { cancelled = true; },
     });
@@ -714,7 +714,7 @@ describe("Journey 6: quickDivider button — enable/disable and click wiring", (
     const btn = setupButton();
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: () => {},
       onCancel: () => {},
     });
@@ -732,7 +732,7 @@ describe("Journey 6: quickDivider button — enable/disable and click wiring", (
     const btn = setupButton();
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: () => {},
       onCancel: () => {},
     });
@@ -751,7 +751,7 @@ describe("Journey 6: quickDivider button — enable/disable and click wiring", (
     const btn = setupButton(); // stays disabled — no applyButtonState call
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: () => {},
       onCancel: () => {},
     });
@@ -774,7 +774,7 @@ describe("Journey 6: quickDivider button — enable/disable and click wiring", (
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -835,7 +835,7 @@ describe("Journey 7: delete button and Delete key remove the divider exclusion",
     // Create a divider via draw
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -889,7 +889,7 @@ describe("Journey 7: delete button and Delete key remove the divider exclusion",
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
@@ -915,7 +915,7 @@ describe("Journey 7: delete button and Delete key remove the divider exclusion",
 
     const drawCtrl = createDividerDrawController({
       getSvg: () => svg,
-      getPolygonVertices: () => RECT_100,
+      getSurfacePolygons: () => [{ id: "uncovered-0", type: "uncovered", vertices: RECT_100 }],
       onComplete: buildOnComplete(() => RECT_100, exclCtrl),
       onCancel: () => {},
     });
