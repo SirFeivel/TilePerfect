@@ -13,9 +13,9 @@ import { t, setLanguage, getLanguage } from "./i18n.js";
 import { initMainTabs } from "./tabs.js";
 import { initFullscreen } from "./fullscreen.js";
 import polygonClipping from "polygon-clipping";
-import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts } from "./geometry.js";
+import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts, splitPolygonByLine } from "./geometry.js";
 import { getRoomAbsoluteBounds, findPositionOnFreeEdge, validateFloorConnectivity, subtractOverlappingAreas } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles, computeZoneTiles } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
 import { classifyAndExtendRooms } from "./envelope.js";
 import { wireQuickViewToggleHandlers, syncQuickViewToggleStates } from "./quick_view_toggles.js";
 import { createZoomPanController } from "./zoom-pan.js";
@@ -41,7 +41,6 @@ import {
   renderExclProps,
   renderSubSurfaceProps,
   renderQuickSubSurface,
-  renderDividerZoneUI,
   renderObj3dList,
   renderObj3dProps,
   renderSkirtingRoomList,
@@ -53,7 +52,6 @@ import {
   renderCommercialTab,
   renderExportTab
 } from "./render.js";
-import { createDividerController } from "./dividers.js";
 import { createDividerDrawController } from "./divider-draw.js";
 import { createStructureController } from "./structure.js";
 import { createRemovalController } from "./removal.js";
@@ -79,7 +77,6 @@ window.__fpStore = store; // keep for console testing
 
 let selectedExclId = null;
 let selectedObj3dId = null;
-let selectedDividerId = null;
 let selectedTilePresetId = null;
 let selectedSkirtingPresetId = null;
 let lastUnionError = null;
@@ -187,11 +184,6 @@ function setSelectedExcl(id) {
 }
 function setSelectedId(id) {
   selectedExclId = id || null;
-}
-
-function setSelectedDividerId(id) {
-  selectedDividerId = id || null;
-  renderAll();
 }
 
 function setSelectedObj3d(id) {
@@ -515,9 +507,6 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
   const floorSubSurfaces = computeSubSurfaceTiles(state, getAllFloorExclusions(room), floor, { isRemovalMode });
   console.log(`[main:subSurface-floor] room=${room.id} subSurfaces=${floorSubSurfaces.length}`);
 
-  const floorZoneTiles = computeZoneTiles(state, room, floor, { isRemovalMode });
-  console.log(`[main:zoneTiles-floor] room=${room.id} zones=${floorZoneTiles.length}`);
-
   const desc = {
     id: room.id,
     polygonVertices: room.polygonVertices,
@@ -528,7 +517,6 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
     doorwayFloorPatches,
     objects3d: objects3dWithTiles,
     subSurfaceTiles: floorSubSurfaces,
-    zoneTiles: floorZoneTiles,
   };
   const pos3d = desc.floorPosition;
   const verts3d = desc.polygonVertices || [];
@@ -588,9 +576,6 @@ function prepareFloorWallData(state, floor, wallGeometry) {
       const subSurfaceTiles = computeSubSurfaceTiles(state, region.exclusions || [], floor, { isRemovalMode });
       console.log(`[main:subSurface-wall] wall=${wall.id} surf=${idx} subSurfaces=${subSurfaceTiles.length}`);
 
-      const zoneTiles = computeZoneTiles(state, region, floor, { isRemovalMode });
-      console.log(`[main:zoneTiles-wall] wall=${wall.id} surf=${idx} zones=${zoneTiles.length}`);
-
       const surfFromCm = surface.fromCm || 0;
       const surfToCm = surface.toCm || edgeLength;
       const tStart = edgeLength > 0 ? surfFromCm / edgeLength : 0;
@@ -623,7 +608,6 @@ function prepareFloorWallData(state, floor, wallGeometry) {
         skirtingSegments, // Skirting segments in wall surface coordinates
         skirtingHeight, // Height of skirting for 3D rendering
         subSurfaceTiles,
-        zoneTiles,
       };
     }).filter(Boolean);
 
@@ -757,12 +741,6 @@ function renderPlanningSection(state, opts) {
     getSelectedExcl: excl.getSelectedExcl,
     commitSubSurface: excl.commitSubSurface,
   });
-  renderDividerZoneUI({
-    state,
-    selectedDividerId,
-    commitZoneSettings: dividerCtrl.commitZoneSettings,
-    deleteDivider: dividerCtrl.deleteDivider,
-  });
   renderObj3dList(state, selectedObj3dId);
   renderObj3dProps({
     state,
@@ -770,6 +748,9 @@ function renderPlanningSection(state, opts) {
     getSelectedObj: obj3dCtrl.getSelectedObj,
     commitObjProps: obj3dCtrl.commitObjProps
   });
+
+  const dividerBtn = document.getElementById("quickDivider");
+  if (dividerBtn) dividerBtn.disabled = !getCurrentRoom(state);
 
   renderWarnings(state, validateState);
   if (!isDrag) renderMetrics(state);
@@ -1155,9 +1136,8 @@ function renderPlanningSection(state, opts) {
       setSelectedObj3d,
       onObj3dPointerDown: obj3dDragCtrl.onObjPointerDown,
       onObj3dResizeHandlePointerDown: obj3dDragCtrl.onResizeHandlePointerDown,
-      selectedDividerId,
-      setSelectedDividerId,
     });
+    dividerDrawCtrl.reattach(); // keep snap dot / preview line on top after SVG rebuild
   }
   updateDoorButtonState();
 }
@@ -1895,39 +1875,45 @@ const obj3dCtrl = createObjects3DController({
   setSelectedId: setSelectedObj3dIdOnly
 });
 
-function getDividerTarget(state) {
+// Returns polygonVertices for the current split target.
+// For wall surfaces, polygonVertices are not stored in state — computed via prepareWallSurface.
+// For floor rooms, taken directly from room.polygonVertices.
+function getTargetPolygonVertices() {
+  const state = store.getState();
   const floor = getCurrentFloor(state);
   const room = getCurrentRoom(state);
   if (!room || !floor) return null;
-  // If a wall surface is selected, target that surface; otherwise target the room
   if (state.selectedWallId) {
     const wall = floor.walls?.find(w => w.id === state.selectedWallId);
-    const surf = wall?.surfaces?.find(s => s.roomId === state.selectedRoomId);
-    return surf || null;
+    const surfIdx = wall?.surfaces?.findIndex(s => s.roomId === state.selectedRoomId) ?? -1;
+    if (surfIdx < 0) return null;
+    const region = prepareWallSurface(wall, surfIdx, room, floor);
+    console.log(`[dividers:getTargetPolygonVertices] wall surface verts=${region?.polygonVertices?.length ?? 0}`);
+    return region?.polygonVertices || null;
   }
-  return room;
+  console.log(`[dividers:getTargetPolygonVertices] floor room verts=${room.polygonVertices?.length ?? 0}`);
+  return room.polygonVertices || null;
 }
-
-const dividerCtrl = createDividerController({
-  getState: () => store.getState(),
-  commit: commitViaStore,
-  getTarget: getDividerTarget,
-  t,
-});
 
 const dividerDrawCtrl = createDividerDrawController({
   getSvg: () => document.getElementById("planSvg"),
-  getPolygonEdges: () => {
-    const state = store.getState();
-    const target = getDividerTarget(state);
-    if (!target?.polygonVertices) return [];
-    const verts = target.polygonVertices;
-    return verts.map((v, i) => ({ p1: v, p2: verts[(i + 1) % verts.length] }));
-  },
+  getPolygonVertices: getTargetPolygonVertices,
   onComplete: ({ p1, p2 }) => {
     dividerDrawCtrl.stop();
     document.getElementById("quickDivider")?.classList.remove("active");
-    dividerCtrl.addDivider(p1, p2);
+    const verts = getTargetPolygonVertices();
+    if (!verts?.length) { console.warn("[divider-split:onComplete] no polygonVertices — skipping"); return; }
+    const polys = splitPolygonByLine(verts, p1, p2);
+    if (!polys || polys.length < 2) { console.warn("[divider-split:onComplete] split produced <2 polygons — skipping"); return; }
+    const areas = polys.map(p => {
+      let a = 0;
+      for (let i = 0, j = p.length - 1; i < p.length; j = i++) a += (p[j].x + p[i].x) * (p[j].y - p[i].y);
+      return Math.abs(a) / 2;
+    });
+    const smallerIdx = areas[0] <= areas[1] ? 0 : 1;
+    const smallerPoly = polys[smallerIdx];
+    console.log(`[divider-split:onComplete] areas=[${areas.map(a => a.toFixed(0)).join(",")}] smallerIdx=${smallerIdx} verts=${smallerPoly.length}`);
+    excl.addFreeform(smallerPoly);
   },
   onCancel: () => {
     dividerDrawCtrl.stop();

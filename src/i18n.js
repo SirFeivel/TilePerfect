@@ -384,14 +384,6 @@ const translations = {
     },
     dividers: {
       title: "Flächen-Teiler",
-      added: "Teiler hinzugefügt",
-      deleted: "Teiler gelöscht",
-      zoneChanged: "Zoneneinstellung geändert",
-      enable: "Zone kacheln",
-      preset: "Kachel-Preset",
-      pattern: "Muster",
-      groutWidth: "Fugenbreite (cm)",
-      groutColor: "Fugenfarbe",
     },
     subSurface: {
       title: "Flächen-Kacheln",
@@ -1095,14 +1087,6 @@ const translations = {
     },
     dividers: {
       title: "Surface Dividers",
-      added: "Divider added",
-      deleted: "Divider deleted",
-      zoneChanged: "Zone setting changed",
-      enable: "Tile this zone",
-      preset: "Tile preset",
-      pattern: "Pattern",
-      groutWidth: "Grout width (cm)",
-      groutColor: "Grout color",
     },
     subSurface: {
       title: "Surface Tiles",
