@@ -70,6 +70,8 @@ function createDefaultSurface(side, roomId, edgeIndex, fromCm, toCm) {
     pattern: null,
     exclusions: [],
     excludedTiles: [],
+    dividers: [],
+    zoneSettings: {},
   };
 }
 
@@ -1307,12 +1309,14 @@ export function computeWallExtensions(floor, roomId) {
 }
 
 /**
- * Check if a specific room edge has active (non-excluded) skirting pieces.
+ * Check if a specific room edge has skirting pieces configured (active or excluded).
+ * Returns true as long as the edge has skirting pieces, even if all are currently excluded.
+ * This ensures the skirting offset is preserved so excluded pieces can be re-activated.
  *
  * @param {Object} room - Room entity with skirting configuration
  * @param {number} edgeIndex - Index of the edge to check
  * @param {Object} floor - Floor entity for doorway intervals
- * @returns {boolean} true if edge has at least one active skirting piece
+ * @returns {boolean} true if edge has at least one skirting piece (active or excluded)
  */
 export function edgeHasActiveSkirting(room, edgeIndex, floor) {
   if (!room || !room.skirting || room.skirting.enabled === false || edgeIndex == null) {
@@ -1334,9 +1338,10 @@ export function edgeHasActiveSkirting(room, edgeIndex, floor) {
   // Get all skirting segments (including excluded ones)
   const segments = computeSkirtingSegments(room, true, floor);
 
-  // Check if any segment lies on this edge and is NOT excluded
+  // Check if any segment lies on this edge (excluded or not — offset must be reserved
+  // even when all pieces are excluded so they can be re-activated)
+  let foundOnEdge = 0, foundActive = 0;
   for (const seg of segments) {
-    if (seg.excluded) continue; // Skip excluded segments
 
     // Check if segment is collinear with edge
     const [p1x, p1y] = seg.p1;
@@ -1367,12 +1372,13 @@ export function edgeHasActiveSkirting(room, edgeIndex, floor) {
       // Segment must be within [0, 1] range of edge
       if ((t1 >= -EPSILON && t1 <= 1 + EPSILON) ||
           (t2 >= -EPSILON && t2 <= 1 + EPSILON)) {
-        return true; // Found at least one active segment on this edge
+        foundOnEdge++;
+        if (!seg.excluded) foundActive++;
       }
     }
   }
 
-  return false;
+  return foundOnEdge > 0; // True if any piece (active or excluded) is on this edge
 }
 
 /**
@@ -1569,9 +1575,20 @@ export function wallSurfaceToTileableRegion(wall, surfaceIdx, options = {}) {
     heightCm: maxH,
     tile: surface.tile ? { ...surface.tile } : null,
     grout: surface.grout ? { ...surface.grout } : null,
-    pattern: surface.pattern ? { ...surface.pattern } : null,
+    // Wall surfaces default to bottom-left origin so tiles stack from the skirting
+    // boundary upward — full tiles at the bottom, clipping (if any) at the ceiling.
+    // Inherits the room's pattern type/settings but forces origin to bl.
+    // An explicit surface pattern (user-set) is used as-is.
+    pattern: (() => {
+      const base = surface.pattern ? { ...surface.pattern }
+        : (room?.pattern ? { ...room.pattern } : null);
+      const origin = skirtingOffset > 0 ? { preset: 'bl', xCm: 0, yCm: 0 } : base?.origin;
+      return base ? { ...base, origin } : null;
+    })(),
     exclusions: allExclusions,
     excludedTiles: surface.excludedTiles || [],
+    dividers: surface.dividers || [],
+    zoneSettings: surface.zoneSettings || {},
     skirting: { enabled: false }, // Wall surfaces don't have floor skirting
     skirtingOffset, // Offset in cm from floor where wall tiles start
     skirtingSegments, // Segments in wall surface coordinates for rendering
@@ -2188,10 +2205,262 @@ export function computeSubSurfaceTiles(state, exclusions, floor, opts = {}) {
 }
 
 /**
+ * Compute tiles for each skirting zone on a wall surface or 3D object face.
+ *
+ * Each zone is a rect in surface-local coords:
+ *   { x1, x2, h, tile, grout, pattern }  (wall surface zones)
+ *   { h, tile, grout, pattern }           (3D object face zone — full-width, x1=0)
+ *
+ * `surfaceWidthCm` is required for full-width zones (when x1/x2 are absent).
+ * Returns [{ zoneIdx, x1, x2, tiles, groutColor, error }].
+ */
+export function computeSkirtingZoneTiles(state, skirtingZones, surfaceWidthCm, floor, opts = {}) {
+  const { isRemovalMode = false } = opts;
+  const results = [];
+  console.log(`[walls:computeSkirtingZoneTiles] checking ${(skirtingZones || []).length} zones surfaceW=${surfaceWidthCm}`);
+  for (let i = 0; i < (skirtingZones || []).length; i++) {
+    const zone = skirtingZones[i];
+    const x1 = zone.x1 ?? 0;
+    const x2 = zone.x2 ?? surfaceWidthCm;
+    const w = x2 - x1;
+    const h = zone.h;
+    if (w <= 0 || h <= 0) {
+      console.warn(`[walls:skirtingZone] idx=${i} degenerate w=${w} h=${h} — skipped`);
+      continue;
+    }
+    const region = {
+      widthCm: w,
+      heightCm: h,
+      polygonVertices: [
+        { x: x1, y: 0 },
+        { x: x2, y: 0 },
+        { x: x2, y: h },
+        { x: x1, y: h },
+      ],
+      tile: zone.tile,
+      grout: zone.grout || { widthCm: 0.2, colorHex: '#ffffff' },
+      pattern: zone.pattern || { type: 'grid', bondFraction: 0.5, rotationDeg: 0, offsetXcm: 0, offsetYcm: 0 },
+      exclusions: [],
+    };
+    // All zones on the same surface share one origin — centered on the full surface width.
+    // This ensures equal cuts on both ends of the wall edge.
+    const originOverride = { x: surfaceWidthCm / 2, y: zone.h / 2 };
+    const r = computeSurfaceTiles(state, region, floor, {
+      exclusions: [],
+      includeDoorwayPatches: false,
+      effectiveSettings: { tile: region.tile, grout: region.grout, pattern: region.pattern },
+      originOverride,
+      isRemovalMode,
+    });
+    console.log(`[walls:skirtingZone] idx=${i} x=[${x1.toFixed(1)},${x2.toFixed(1)}] h=${h} origin=(${originOverride.x.toFixed(1)},${originOverride.y.toFixed(1)}) tiles=${r.tiles.length} error=${r.error || 'none'}`);
+    results.push({ zoneIdx: i, x1, x2, tiles: r.tiles, groutColor: r.groutColor, error: r.error });
+  }
+  return results;
+}
+
+/**
  * Prepare a wall surface region with contact exclusions injected.
  * Single entry point for both the 3D pipeline and the 2D wall editor.
  * Returns the region (with contact exclusions) or null.
  */
+/**
+ * Derives the tile/grout/pattern spec for skirting zones from room skirting settings.
+ * Returns null if cutout type and no floor tile is configured (zone should be suppressed).
+ *
+ * Cutout: long side of floor tile becomes skirting tile width; skirting.heightCm is height.
+ * Bought: boughtWidthCm × heightCm tile with neutral grout.
+ */
+function deriveSkirtingTileSpec(room) {
+  const skirting = room.skirting || {};
+  const h = skirting.heightCm || DEFAULT_SKIRTING_CONFIG.heightCm;
+  const grout = room.grout || { widthCm: 0.2, colorHex: '#ffffff' };
+  const pattern = {
+    type: 'grid',
+    bondFraction: 0.5,
+    rotationDeg: 0,
+    offsetXcm: 0,
+    offsetYcm: 0,
+    origin: { preset: 'center', xCm: 0, yCm: 0 },
+  };
+
+  if (skirting.type === 'bought') {
+    const w = Number(skirting.boughtWidthCm) || DEFAULT_SKIRTING_CONFIG.boughtWidthCm;
+    return {
+      tile: { widthCm: w, heightCm: h, shape: 'rect', reference: null },
+      grout,
+      pattern,
+    };
+  }
+
+  // Cutout: derive from floor tile
+  const floorTile = room.tile;
+  if (!floorTile) {
+    console.log(`[skirting:deriveSpec] room=${room.id} cutout but no floor tile — skipping`);
+    return null;
+  }
+  const longSide = Math.max(floorTile.widthCm, floorTile.heightCm);
+  return {
+    tile: { widthCm: longSide, heightCm: h, shape: floorTile.shape || 'rect', reference: floorTile.reference || null },
+    grout,
+    pattern,
+  };
+}
+
+/**
+ * Projects skirting segments (room-local coords) onto a wall surface,
+ * returning an array of { x1, x2, h } in wall-surface-local coordinates.
+ *
+ * Reuses the same projection math already present in wallSurfaceToTileableRegion
+ * (lines 1526-1555) — cross-product collinearity test + parametric projection.
+ *
+ * @param {Array} segments - from computeSkirtingSegments, p1/p2 in room-local coords
+ * @param {Object} surface - wall.surfaces[n], needs .edgeIndex, .fromCm
+ * @param {Object} room - for polygonVertices
+ * @param {Object} wall - for fromCm fallback
+ * @returns {Array<{x1, x2, h}>}
+ */
+function projectSegmentsToSurface(segments, surface, room, wall) {
+  const edgeIndex = surface.edgeIndex;
+  if (edgeIndex == null) return [];
+
+  const poly = roomPolygon(room);
+  if (!poly?.[0]?.[0]) return [];
+  const verts = poly[0][0];
+  if (edgeIndex >= verts.length) return [];
+
+  const v1 = verts[edgeIndex];
+  const v2 = verts[(edgeIndex + 1) % verts.length];
+  const edgeDx = v2[0] - v1[0];
+  const edgeDy = v2[1] - v1[1];
+  const edgeLen = Math.sqrt(edgeDx * edgeDx + edgeDy * edgeDy);
+  if (edgeLen < 0.01) return [];
+
+  const fromCm = surface.fromCm || 0;
+  const skirtH = room.skirting?.heightCm || DEFAULT_SKIRTING_CONFIG.heightCm;
+  const zones = [];
+
+  for (const seg of segments) {
+    const [p1x, p1y] = seg.p1;
+    const [p2x, p2y] = seg.p2;
+
+    // Check collinearity: cross product of edge direction with (pt - v1) must be near zero
+    const p1Dx = p1x - v1[0], p1Dy = p1y - v1[1];
+    const p2Dx = p2x - v1[0], p2Dy = p2y - v1[1];
+    const cross1 = Math.abs(edgeDx * p1Dy - edgeDy * p1Dx);
+    const cross2 = Math.abs(edgeDx * p2Dy - edgeDy * p2Dx);
+
+    if (cross1 > EPSILON * edgeLen || cross2 > EPSILON * edgeLen) continue;
+
+    // Parametric position along edge (0..edgeLen)
+    const t1 = (p1Dx * edgeDx + p1Dy * edgeDy) / (edgeLen * edgeLen);
+    const t2 = (p2Dx * edgeDx + p2Dy * edgeDy) / (edgeLen * edgeLen);
+
+    // Convert to surface-local x (offset by surface start)
+    const x1 = t1 * edgeLen - fromCm;
+    const x2 = t2 * edgeLen - fromCm;
+    const surfWidth = (surface.toCm || edgeLen) - fromCm;
+
+    // Only include segments that overlap this surface's x range
+    if (Math.min(x1, x2) > surfWidth + 0.1 || Math.max(x1, x2) < -0.1) continue;
+
+    zones.push({ x1: Math.min(x1, x2), x2: Math.max(x1, x2), h: skirtH });
+  }
+
+  return zones;
+}
+
+/**
+ * Rebuilds all skirting zones across the entire state in-place.
+ * Called after every commit so stored skirtingZones stay current.
+ *
+ * Wall surfaces: skirtingZones[] contains positioned rect specs (x1, x2, h, tile, grout, pattern).
+ * 3D object faces: skirtingZone contains full-width band spec (h, tile, grout, pattern).
+ *
+ * Circle rooms are skipped (no wall edges).
+ */
+/**
+ * Merges adjacent skirting zones (same h) into continuous runs.
+ * Piece-level segments from computeSkirtingSegments are pre-divided by tile width;
+ * merging them restores the full continuous run so the tiler can apply
+ * centered origin across the whole run (equal cuts on both ends).
+ * Zones interrupted by doorways or 3D objects produce separate runs.
+ */
+function mergeAdjacentZones(zones) {
+  if (!zones.length) return [];
+  const sorted = [...zones].sort((a, b) => a.x1 - b.x1);
+  const merged = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    if (Math.abs(sorted[i].x1 - last.x2) < 0.5) {
+      last.x2 = sorted[i].x2;
+    } else {
+      merged.push({ ...sorted[i] });
+    }
+  }
+  return merged;
+}
+
+export function rebuildAllSkirtingZones(state) {
+  let totalZones = 0;
+  for (const floor of (state.floors || [])) {
+    for (const room of (floor.rooms || [])) {
+
+      // Clear existing zones on all wall surfaces belonging to this room
+      for (const wall of (floor.walls || [])) {
+        for (const s of (wall.surfaces || [])) {
+          if (s.roomId === room.id) s.skirtingZones = [];
+        }
+      }
+      // Clear on 3D object faces
+      for (const obj of (room.objects3d || [])) {
+        for (const s of (obj.surfaces || [])) s.skirtingZone = null;
+      }
+
+      // Circle rooms have no wall edges — skip
+      if (room.circle?.rx > 0) continue;
+
+      if (!room.skirting?.enabled) continue;
+
+      const tileSpec = deriveSkirtingTileSpec(room);
+      if (!tileSpec) continue; // cutout with no floor tile
+
+      const segments = computeSkirtingSegments(room, false, floor);
+      console.log(`[skirting:rebuild] room=${room.id} segments=${segments.length} tile=${tileSpec.tile.widthCm}×${tileSpec.tile.heightCm}`);
+
+      // Wall surfaces: project room-wall segments onto each surface
+      for (const wall of (floor.walls || [])) {
+        for (let i = 0; i < (wall.surfaces || []).length; i++) {
+          const s = wall.surfaces[i];
+          if (s.roomId !== room.id) continue;
+
+          const rawZones = projectSegmentsToSurface(segments, s, room, wall);
+          // Merge adjacent zones into continuous runs so the tile engine
+          // can apply centering across the full run, not per-piece.
+          const zones = mergeAdjacentZones(rawZones);
+          s.skirtingZones = zones.map(z => ({ ...z, ...tileSpec }));
+          totalZones += s.skirtingZones.length;
+
+          if (s.skirtingZones.length) {
+            console.log(`[skirting:rebuild] wall=${wall.id.slice(0,8)} surf=${i} edgeIdx=${s.edgeIndex} zones=${s.skirtingZones.length} x=[${s.skirtingZones.map(z => `${z.x1.toFixed(1)}-${z.x2.toFixed(1)}`).join(',')}]`);
+          }
+        }
+      }
+
+      // 3D object faces: full-width bottom band (no x1/x2 — spans entire face)
+      for (const obj of (room.objects3d || [])) {
+        if (!obj.skirtingEnabled) continue;
+        const h = Math.min(tileSpec.tile.heightCm, obj.heightCm || 100);
+        for (const s of (obj.surfaces || [])) {
+          if (s.face === 'top') continue;
+          s.skirtingZone = { h, tile: { ...tileSpec.tile, heightCm: h }, grout: tileSpec.grout, pattern: tileSpec.pattern };
+          console.log(`[skirting:rebuild] obj=${obj.id.slice(0,8)} face=${s.face} h=${h}`);
+        }
+      }
+    }
+  }
+  console.log(`[skirting:rebuild] done — ${totalZones} total skirting zones across all surfaces`);
+}
+
 export function prepareWallSurface(wall, idx, room, floor) {
   const region = wallSurfaceToTileableRegion(wall, idx, { room, floor });
   if (!region || !room) return region;
@@ -2214,6 +2483,9 @@ export function prepareWallSurface(wall, idx, room, floor) {
     console.log(`[prepareWallSurface] wall=${wall.id} surface=${idx}: ${contactExclusions.length} contact exclusion(s)`);
     region.exclusions = [...(region.exclusions || []), ...contactExclusions];
   }
+
+  // Expose pre-computed skirting zones so the 2D renderer can tile them
+  region.skirtingZones = wall.surfaces[idx]?.skirtingZones || [];
 
   return region;
 }

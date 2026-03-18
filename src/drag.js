@@ -239,6 +239,8 @@ export function createExclusionDragController({
   // Optional: override target resolution for non-floor surfaces (e.g. wall surfaces)
   getTarget = null,
   getTargetBounds = null,
+  // Optional: (nextState, exclId) => boolean — return false to abort commit (revert)
+  validateDrop = null,
 }) {
   const resolveTarget = (s) => getTarget ? getTarget(s) : getCurrentRoom(s);
   const resolveBounds = (s) => {
@@ -337,8 +339,16 @@ export function createExclusionDragController({
         }
       }
 
-      // Commit triggers full render with correct tile calculations
-      commit(getMoveLabel(), finalState);
+      // Validate drop before committing (mutual exclusivity enforcement)
+      if (validateDrop && !validateDrop(finalState, drag.id)) {
+        console.warn(`[drag:move] drop rejected for excl=${drag.id} — reverting`);
+        const elements = findExclElements(drag.id);
+        elements.forEach(el => el.removeAttribute("transform"));
+        if (render) render();
+      } else {
+        // Commit triggers full render with correct tile calculations
+        commit(getMoveLabel(), finalState);
+      }
     } else {
       // No movement - selection already set in pointerdown, just trigger full render
       const elements = findExclElements(drag.id);
@@ -648,7 +658,13 @@ export function createExclusionDragController({
       }
 
       const label = getResizeLabel ? getResizeLabel() : "Resized exclusion";
-      commit(label, finalState);
+      // Validate resize before committing (mutual exclusivity enforcement)
+      if (validateDrop && !validateDrop(finalState, resize.id)) {
+        console.warn(`[drag:resize] drop rejected for excl=${resize.id} — reverting`);
+        if (render) render();
+      } else {
+        commit(label, finalState);
+      }
     } else {
       // No resize - trigger render to restore
       render();
@@ -728,6 +744,9 @@ export function createObject3DDragController({
   onDragEnd
 }) {
   function getObj3dBounds(obj) {
+    if (obj.type === 'cylinder') {
+      return { minX: obj.cx - obj.r, minY: obj.cy - obj.r, maxX: obj.cx + obj.r, maxY: obj.cy + obj.r };
+    }
     let pts;
     if (obj.type === 'tri') {
       pts = [obj.p1, obj.p2, obj.p3];
@@ -827,6 +846,8 @@ export function createObject3DDragController({
         p3: { x: obj.p3.x + dx, y: obj.p3.y + dy } };
     } else if (obj.type === 'freeform' && obj.vertices) {
       tentObj = { ...obj, vertices: obj.vertices.map(v => ({ x: v.x + dx, y: v.y + dy })) };
+    } else if (obj.type === 'cylinder') {
+      tentObj = { ...obj, cx: obj.cx + dx, cy: obj.cy + dy };
     } else {
       tentObj = { ...obj, x: obj.x + dx, y: obj.y + dy };
     }
@@ -891,6 +912,8 @@ export function createObject3DDragController({
           obj.p3.x += snapDx; obj.p3.y += snapDy;
         } else if (obj.type === 'freeform' && obj.vertices) {
           for (const v of obj.vertices) { v.x += snapDx; v.y += snapDy; }
+        } else if (obj.type === 'cylinder') {
+          obj.cx += snapDx; obj.cy += snapDy;
         } else {
           obj.x += snapDx;
           obj.y += snapDy;
@@ -1015,6 +1038,17 @@ export function createObject3DDragController({
       });
 
       showResizeOverlay(`(${formatCm(curMouse.x)}, ${formatCm(curMouse.y)})`, e.clientX, e.clientY);
+    } else if (startShape.type === 'cylinder' && handleType === 'r') {
+      const newR = Math.max(1, startShape.r + svgDx);
+      const elements = findObjElements(resize.id);
+      elements.forEach(el => {
+        if (!el.hasAttribute("data-resize-handle")) {
+          el.setAttribute("r", newR);
+        } else {
+          el.setAttribute("cx", startShape.cx + newR);
+        }
+      });
+      showResizeOverlay(`r=${formatCm(newR)} cm`, e.clientX, e.clientY);
     } else {
       // Rect resize (original logic)
       const dims = getRectResizeDims(startShape, handleType, svgDx, svgDy);
@@ -1097,6 +1131,8 @@ export function createObject3DDragController({
             obj.vertices[idx].x = startShape.vertices[idx].x + svgDx;
             obj.vertices[idx].y = startShape.vertices[idx].y + svgDy;
           }
+        } else if (obj.type === 'cylinder' && handleType === 'r') {
+          obj.r = Math.max(1, startShape.r + svgDx);
         } else {
           if (handleType.includes("w")) {
             obj.x = startShape.x + svgDx;

@@ -137,6 +137,126 @@ describe("createWallMapper", () => {
     expect(tr.y).toBeCloseTo(200);
     expect(tr.z).toBeCloseTo(0);
   });
+
+  it("yFloor=6: bottom maps to y_3D=6, ceiling stays at wallHeight", () => {
+    // Wall height 200, skirting 6: tiles span y_3D from 6 to 200 (not 0 to 206)
+    const verts = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 200 },
+      { x: 0, y: 200 },
+    ];
+    const mapper = createWallMapper(verts, 0, 0, 100, 0, 200, 200, 6);
+    expect(mapper).not.toBeNull();
+    // Bottom of tileable polygon (s=0) → y_3D = yFloor = 6
+    expect(mapper(0, 0).y).toBeCloseTo(6);
+    // Ceiling (s=1) → y_3D = 200 (unchanged)
+    expect(mapper(0, 200).y).toBeCloseTo(200);
+    // Mid (s=0.5) → y_3D = 6 + 0.5*(200-6) = 103
+    expect(mapper(0, 100).y).toBeCloseTo(103);
+  });
+
+  it("yFloor=6 on sloped wall: both ends start at yFloor, left ceiling correct", () => {
+    // Sloped wall: hStart=200, hEnd=250, yFloor=6
+    const verts = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 250 },
+      { x: 0, y: 200 },
+    ];
+    const mapper = createWallMapper(verts, 0, 0, 100, 0, 200, 250, 6);
+    expect(mapper).not.toBeNull();
+    // Left bottom (s=0, t=0) → y_3D = 6
+    expect(mapper(0, 0).y).toBeCloseTo(6);
+    // Right bottom (s=0, t=1) → y_3D = 6
+    expect(mapper(100, 0).y).toBeCloseTo(6);
+    // Left ceiling (s=1, t=0) → y_3D = hStart = 200
+    expect(mapper(0, 200).y).toBeCloseTo(200);
+    // Note: the right ceiling point (100, 250) gives s=1.25 (outside [0,1]) because
+    // the mapper's V basis vector is fixed to the left column height (200), not hEnd (250).
+    // This is a known limitation for non-rectangular polygons — the mapper extrapolates
+    // correctly for the bottom (s=0) and left column (t=0), which is what yFloor relies on.
+  });
+
+});
+
+describe("skirting zone mapper contract", () => {
+  // The zone mapper is built inside addWallToScene:
+  //   const zoneMapper = (sx, sy) => { const p = mapper(sx, yFloor - sy); return { ...p, y: p.y - skirtOff }; }
+  // where mapper = createWallMapper(..., skirtOff) and yFloor = surfaceVerts[0].y.
+  // Contract: zone y=0 (physical floor) → y_3D=0; zone y=skirtOff → y_3D=skirtOff.
+
+  function makeZoneMapper(wallW, wallH, skirtOff) {
+    // Realistic polygon: tileable region has bottom at (wallH - skirtOff), ceiling at 0
+    const polyBottom = wallH - skirtOff;
+    const verts = [
+      { x: 0,     y: polyBottom },
+      { x: wallW, y: polyBottom },
+      { x: wallW, y: 0 },
+      { x: 0,     y: 0 },
+    ];
+    const mapper = createWallMapper(verts, 0, 0, wallW, 0, wallH, wallH, skirtOff);
+    const yFloor = polyBottom;
+    return (sx, sy) => { const p = mapper(sx, yFloor - sy); return { x: p.x, y: p.y - skirtOff, z: p.z }; };
+  }
+
+  it("zone y=0 maps to y_3D=0 (physical floor)", () => {
+    const zm = makeZoneMapper(300, 250, 6.4);
+    expect(zm(0, 0).y).toBeCloseTo(0);
+    expect(zm(150, 0).y).toBeCloseTo(0);
+    expect(zm(300, 0).y).toBeCloseTo(0);
+  });
+
+  it("zone y=skirtH maps to y_3D=skirtH (top of skirting zone)", () => {
+    const skirtH = 6;
+    const zm = makeZoneMapper(300, 250, 6.4);
+    expect(zm(0, skirtH).y).toBeCloseTo(skirtH);
+    expect(zm(150, skirtH).y).toBeCloseTo(skirtH);
+  });
+
+  it("zone y=skirtOff maps to y_3D=skirtOff (full reserved offset)", () => {
+    const skirtOff = 6.4;
+    const zm = makeZoneMapper(300, 250, skirtOff);
+    expect(zm(0, skirtOff).y).toBeCloseTo(skirtOff);
+  });
+
+  it("zone mapper and tile mapper do not overlap: tile bottom > zone top", () => {
+    // With skirtOff=6.4: wall tiles start at y_3D=6.4; skirting zone reaches y_3D=6.4 max.
+    // They meet exactly at y_3D=skirtOff — no overlap, no gap.
+    const skirtOff = 6.4;
+    const wallH = 250;
+    const polyBottom = wallH - skirtOff;
+    const verts = [
+      { x: 0,   y: polyBottom },
+      { x: 300, y: polyBottom },
+      { x: 300, y: 0 },
+      { x: 0,   y: 0 },
+    ];
+    const mapper = createWallMapper(verts, 0, 0, 300, 0, wallH, wallH, skirtOff);
+    // Bottom of tileable region (wall tile floor) → y_3D = skirtOff
+    expect(mapper(0, polyBottom).y).toBeCloseTo(skirtOff);
+    // Skirting zone top → y_3D = skirtOff (they meet exactly)
+    const yFloor = polyBottom;
+    const zoneMapper = (sx, sy) => { const p = mapper(sx, yFloor - sy); return { x: p.x, y: p.y - skirtOff, z: p.z }; };
+    expect(zoneMapper(0, skirtOff).y).toBeCloseTo(skirtOff);
+  });
+
+  it("skirtOff=0: zone mapper is identity (no skirting case, yFloor=0)", () => {
+    // When skirtOff=0, mapper has yFloor=0, zone mapper subtracts 0 → identical to base mapper
+    const wallH = 200;
+    const verts = [
+      { x: 0,   y: wallH },
+      { x: 100, y: wallH },
+      { x: 100, y: 0 },
+      { x: 0,   y: 0 },
+    ];
+    const mapper = createWallMapper(verts, 0, 0, 100, 0, wallH, wallH, 0);
+    const yFloor = wallH;
+    const zoneMapper = (sx, sy) => { const p = mapper(sx, yFloor - sy); return { x: p.x, y: p.y - 0, z: p.z }; };
+    // zone y=0 → y_3D=0, zone y=wallH → y_3D=wallH
+    expect(zoneMapper(0, 0).y).toBeCloseTo(0);
+    expect(zoneMapper(0, wallH).y).toBeCloseTo(wallH);
+  });
 });
 
 describe("createFloorMapper", () => {

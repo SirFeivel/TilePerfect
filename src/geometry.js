@@ -183,11 +183,14 @@ export function computeSkirtingArea(room, exclusions) {
 export function computeSkirtingSegments(room, includeExcluded = false, floor = null) {
   if (!room) return [];
   const allExcl = getAllFloorExclusions(room);
-  const area = computeSkirtingArea(room, allExcl);
+  // Only 3D objects create skirting perimeters. 2D exclusions (zones, voids) are
+  // purely planar and do not represent vertical surfaces.
+  const skirtingExcl = allExcl.filter(e => e._isObject3d);
+  const area = computeSkirtingArea(room, skirtingExcl);
   if (!area.mp) return [];
 
-  // Source of truth for physical walls (includes all exclusions)
-  const avail = computeAvailableArea(room, allExcl);
+  // Boundary check uses only 3D objects — zone exclusions don't interrupt room wall skirting.
+  const avail = computeAvailableArea(room, skirtingExcl);
   if (!avail.mp) return [];
 
   const skirting = room.skirting || {};
@@ -197,6 +200,9 @@ export function computeSkirtingSegments(room, includeExcluded = false, floor = n
   const pieceLength = skirting.type === "bought"
     ? (Number(skirting.boughtWidthCm) || DEFAULT_SKIRTING_PRESET.lengthCm)
     : longSide;
+  // Grout width determines tile step; pieces must use same step as visual tiles
+  const groutW = Number(room.grout?.widthCm) || 0;
+  const stepX = pieceLength + groutW;
 
   // Build doorway intervals per polygon edge for fast lookup
   const doorwayIntervals = buildDoorwayIntervals(room, floor);
@@ -229,29 +235,52 @@ export function computeSkirtingSegments(room, includeExcluded = false, floor = n
         const unitDx = dx / wallLength;
         const unitDy = dy / wallLength;
 
+        // Center-align pieces to match the visual tile layout produced by computeSkirtingZoneTiles.
+        // The visual renderer uses preset="center" + originOverride={x: wallLen/2}, which shifts
+        // the anchor by -tw/2: anchorX = wallLen/2 - pieceLength/2.
+        // Steps use (pieceLength + grout) so piece boundaries match tile boundaries exactly.
+        const anchor = wallLength / 2 - pieceLength / 2;
+        const centerOffset = ((anchor % stepX) + stepX) % stepX; // positive modulo
+        const hasLeftCut = centerOffset > EPSILON;
+        const indexOffset = hasLeftCut ? 1 : 0; // p0 reserved for left cut when it exists
+
         for (const [startDist, endDist] of overlaps) {
-          const startIdx = Math.floor(startDist / pieceLength);
-          const endIdx = Math.floor((endDist - EPSILON) / pieceLength);
+          // Left cut: [0, centerOffset] → p0 (only when centerOffset > 0)
+          if (hasLeftCut && startDist < centerOffset && endDist > 0) {
+            const pieceStart = Math.max(startDist, 0);
+            const pieceEnd = Math.min(endDist, centerOffset);
+            if (pieceEnd - pieceStart > EPSILON) {
+              const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
+              const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
+              const pieceId = `${wallId}-p0`;
+              const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
+              if (includeExcluded || !isExcluded) {
+                segments.push({ p1: segP1, p2: segP2, length: pieceEnd - pieceStart, id: pieceId, excluded: isExcluded });
+              }
+            }
+          }
 
-          for (let j = startIdx; j <= endIdx; j++) {
-            const pieceStart = Math.max(startDist, j * pieceLength);
-            const pieceEnd = Math.min(endDist, (j + 1) * pieceLength);
-            if (pieceEnd - pieceStart <= EPSILON) continue;
+          // Full pieces and right cut: starting from centerOffset, step = stepX
+          if (endDist > centerOffset) {
+            const relStart = Math.max(startDist, centerOffset) - centerOffset;
+            const relEnd = endDist - centerOffset;
+            const kStart = Math.max(0, Math.floor(relStart / stepX));
+            const kEnd = Math.floor((relEnd - EPSILON) / stepX);
 
-            const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
-            const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
-            const pieceId = `${wallId}-p${j}`;
+            for (let k = kStart; k <= kEnd; k++) {
+              const pieceStart = Math.max(startDist, centerOffset + k * stepX);
+              const pieceEnd = Math.min(endDist, Math.min(wallLength, centerOffset + (k + 1) * stepX));
+              if (pieceEnd - pieceStart <= EPSILON) continue;
 
-            const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
-            if (!includeExcluded && isExcluded) continue;
-
-            segments.push({
-              p1: segP1,
-              p2: segP2,
-              length: pieceEnd - pieceStart,
-              id: pieceId,
-              excluded: isExcluded
-            });
+              const j = k + indexOffset;
+              const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
+              const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
+              const pieceId = `${wallId}-p${j}`;
+              const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
+              if (includeExcluded || !isExcluded) {
+                segments.push({ p1: segP1, p2: segP2, length: pieceEnd - pieceStart, id: pieceId, excluded: isExcluded });
+              }
+            }
           }
         }
       }
@@ -601,6 +630,12 @@ export function getAllFloorExclusions(room) {
         vertices: obj.vertices,
         skirtingEnabled: obj.skirtingEnabled, _isObject3d: true
       });
+    } else if (obj.type === 'cylinder') {
+      excls.push({
+        type: 'circle', id: obj.id,
+        cx: obj.cx, cy: obj.cy, r: obj.r,
+        skirtingEnabled: obj.skirtingEnabled, _isObject3d: true
+      });
     } else {
       excls.push({
         type: 'rect', id: obj.id,
@@ -712,12 +747,122 @@ export function computeAvailableArea(room, exclusions) {
 }
 
 /**
+ * Validate that a freeform exclusion in `room` (after a drag/resize) does not
+ * overlap with any other freeform exclusion and stays within the room boundary.
+ *
+ * Returns { valid: true } or { valid: false, reason: string }.
+ * Only checks freeform exclusions — rect/circle/tri exclusions are not zones
+ * and do not participate in mutual-exclusivity enforcement.
+ */
+export function validateFreeformDrop(room, exclId) {
+  const moved = room.exclusions?.find(e => e.id === exclId);
+  if (!moved || moved.type !== 'freeform' || !moved.vertices?.length) {
+    return { valid: true }; // not a freeform — skip
+  }
+  const movedMp = exclusionToPolygon(moved);
+  if (!movedMp) return { valid: true };
+
+  // 1. Must be fully within room boundary
+  const roomMp = roomPolygon(room);
+  try {
+    const outside = polygonClipping.difference(movedMp, roomMp);
+    if (outside.length > 0) {
+      console.warn(`[geometry:validateFreeformDrop] excl=${exclId} outside room boundary`);
+      return { valid: false, reason: 'outside-room' };
+    }
+  } catch (e) {
+    return { valid: false, reason: String(e?.message || e) };
+  }
+
+  // 2. Must not overlap any other freeform exclusion
+  const others = (room.exclusions || []).filter(
+    e => e.id !== exclId && e.type === 'freeform' && e.vertices?.length >= 3
+  );
+  for (const other of others) {
+    const otherMp = exclusionToPolygon(other);
+    if (!otherMp) continue;
+    try {
+      const intersection = polygonClipping.intersection(movedMp, otherMp);
+      if (intersection.length > 0) {
+        console.warn(`[geometry:validateFreeformDrop] excl=${exclId} overlaps excl=${other.id}`);
+        return { valid: false, reason: `overlaps-${other.id}` };
+      }
+    } catch (e) {
+      return { valid: false, reason: String(e?.message || e) };
+    }
+  }
+
+  return { valid: true };
+}
+
+/**
+ * Ray-casting point-in-polygon test.
+ * @param {{x:number,y:number}} pt
+ * @param {{x:number,y:number}[]} vertices — open polygon (last point ≠ first)
+ * @returns {boolean}
+ */
+export function pointInPolygon(pt, vertices) {
+  let inside = false;
+  const n = vertices.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = vertices[i].x, yi = vertices[i].y;
+    const xj = vertices[j].x, yj = vertices[j].y;
+    if (((yi > pt.y) !== (yj > pt.y)) &&
+        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Returns the polygon set for a floor room: the uncovered area (room minus all
+ * exclusions, possibly multi-polygon) plus each freeform exclusion as a zone.
+ *
+ * Each entry: { id, type: 'uncovered'|'zone', exclId?: string, vertices: [{x,y}] }
+ *
+ * Only freeform exclusions become zone polygons (they're the ones created by the
+ * divider tool and represent independently-tileable sub-surfaces).
+ */
+export function computeSurfacePolygons(room) {
+  const allExcls = room.exclusions || [];
+  const freeformExcls = allExcls.filter(e => e.type === 'freeform' && e.vertices?.length >= 3);
+
+  const { mp: uncoveredMp } = computeAvailableArea(room, allExcls);
+  const result = [];
+
+  if (uncoveredMp) {
+    uncoveredMp.forEach((poly, idx) => {
+      const verts = poly[0].slice(0, -1).map(([x, y]) => ({ x, y }));
+      if (verts.length >= 3) {
+        result.push({ id: `uncovered-${idx}`, type: 'uncovered', vertices: verts });
+      }
+    });
+  }
+
+  for (const excl of freeformExcls) {
+    result.push({ id: excl.id, type: 'zone', exclId: excl.id, vertices: excl.vertices });
+  }
+
+  console.log(`[geometry:computeSurfacePolygons] room=${room.id} uncovered=${result.filter(p => p.type === 'uncovered').length} zones=${freeformExcls.length}`);
+  return result;
+}
+
+/**
  * Returns the footprint edges of a 3D object in room-local 2D coords,
  * each tagged with its face name matching createBoxFaceMapper conventions.
  * @param {Object} obj - 3D object (rect/tri/freeform)
  * @returns {Array} [{ p1, p2, face }]
  */
 export function getObjFootprintEdges(obj) {
+  if (obj.type === 'cylinder') {
+    const steps = 16;
+    const verts = Array.from({ length: steps }, (_, i) => {
+      const a = (i / steps) * Math.PI * 2;
+      return { x: obj.cx + Math.cos(a) * obj.r, y: obj.cy + Math.sin(a) * obj.r };
+    });
+    return verts.map((v, i) => ({ p1: v, p2: verts[(i + 1) % steps], face: `side-${i}` }));
+  }
   if (obj.type === 'rect') {
     const { x, y, w, h } = obj;
     return [
@@ -1475,3 +1620,67 @@ function tilesForPreviewBasketweave(state, availableMP, tw, th, grout, includeEx
 
   return { tiles, error: null };
 }
+
+// ── Surface Divider Helpers ───────────────────────────────────────────────────
+
+export function isPointInPolygon(point, vertices) {
+  const { x, y } = point;
+  let inside = false;
+  for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+    const xi = vertices[i].x, yi = vertices[i].y;
+    const xj = vertices[j].x, yj = vertices[j].y;
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function insertPointOnRing(vertices, pt) {
+  let bestIdx = -1, bestT = -1, bestDist = Infinity;
+  const n = vertices.length;
+  for (let i = 0; i < n; i++) {
+    const a = vertices[i], b = vertices[(i + 1) % n];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 0.0001) continue;
+    const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / len2));
+    const px = a.x + t * dx, py = a.y + t * dy;
+    const dist = Math.hypot(pt.x - px, pt.y - py);
+    if (dist < bestDist) { bestDist = dist; bestIdx = i; bestT = t; }
+  }
+  if (bestIdx < 0) {
+    console.warn(`[geometry:insertPointOnRing] no edge found for pt=(${pt.x.toFixed(1)},${pt.y.toFixed(1)})`);
+    return vertices;
+  }
+  if (bestT < 0.001 || bestT > 0.999) {
+    console.log(`[geometry:insertPointOnRing] pt=(${pt.x.toFixed(1)},${pt.y.toFixed(1)}) t=${bestT.toFixed(3)} — coincident with vertex, skipping insert`);
+    return vertices;
+  }
+  const result = [...vertices];
+  result.splice(bestIdx + 1, 0, { x: pt.x, y: pt.y });
+  console.log(`[geometry:insertPointOnRing] inserted at edge ${bestIdx} t=${bestT.toFixed(3)} dist=${bestDist.toFixed(2)}`);
+  return result;
+}
+
+export function splitPolygonByLine(vertices, p1, p2) {
+  const verts = insertPointOnRing(insertPointOnRing([...vertices], p1), p2);
+  const i1 = verts.findIndex(v => Math.abs(v.x - p1.x) < 0.01 && Math.abs(v.y - p1.y) < 0.01);
+  const i2 = verts.findIndex((v, i) => i !== i1 && Math.abs(v.x - p2.x) < 0.01 && Math.abs(v.y - p2.y) < 0.01);
+  if (i1 < 0 || i2 < 0 || i1 === i2) {
+    console.warn(`[geometry:splitPolygonByLine] degenerate: i1=${i1} i2=${i2} verts=${verts.length}`);
+    return null;
+  }
+  const n = verts.length;
+  const a = [], b = [];
+  for (let i = i1; ; i = (i + 1) % n) { a.push(verts[i]); if (i === i2) break; }
+  for (let i = i2; ; i = (i + 1) % n) { b.push(verts[i]); if (i === i1) break; }
+  if (a.length < 3 || b.length < 3) {
+    console.warn(`[geometry:splitPolygonByLine] sub-polygon too small: a=${a.length} b=${b.length}`);
+    return null;
+  }
+  console.log(`[geometry:splitPolygonByLine] p1=(${p1.x.toFixed(1)},${p1.y.toFixed(1)}) p2=(${p2.x.toFixed(1)},${p2.y.toFixed(1)}) → a=${a.length} b=${b.length} verts`);
+  return [a, b];
+}
+
+

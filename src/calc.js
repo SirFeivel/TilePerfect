@@ -37,12 +37,23 @@ export function computeSkirtingNeeds(state, roomOverride = null) {
     };
   }
   
+  // Group centered piece-segments back into per-wall runs for material calculation.
+  // computeSkirtingSegments now uses a centered layout (splitting each wall overlap
+  // into left-cut + full-pieces + right-cut). Material needs are computed per run
+  // (continuous wall edge) — ceil(runLength / pieceLength) — not per individual piece,
+  // to match the original left-aligned semantics and avoid over-counting wastage.
+  const runLengths = new Map();
+  for (const seg of segments) {
+    const runKey = seg.id.replace(/-p\d+$/, '');
+    runLengths.set(runKey, (runLengths.get(runKey) || 0) + seg.length);
+  }
+
   // Ready-made (bought per piece)
   if (skirting.type === "bought") {
     const pieceLength = Number(skirting.boughtWidthCm) || 1;
     let totalPieces = 0;
-    for (const seg of segments) {
-      totalPieces += Math.ceil(seg.length / pieceLength);
+    for (const runLen of runLengths.values()) {
+      totalPieces += Math.ceil(runLen / pieceLength);
     }
     const totalCost = totalPieces * (Number(skirting.boughtPricePerPiece) || 0);
 
@@ -77,8 +88,8 @@ export function computeSkirtingNeeds(state, roomOverride = null) {
 
   let totalStripsNeeded = 0;
   if (stripsPerTile > 0) {
-    for (const seg of segments) {
-      totalStripsNeeded += Math.ceil(seg.length / longSide);
+    for (const runLen of runLengths.values()) {
+      totalStripsNeeded += Math.ceil(runLen / longSide);
     }
   }
 

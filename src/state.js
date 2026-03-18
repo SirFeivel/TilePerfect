@@ -18,7 +18,7 @@ import { clearMetricsCache } from './calc.js';
 import { areRoomsAdjacent } from './floor_geometry.js';
 import { computeCompositePolygon } from './composite.js';
 import { DEFAULT_WALL_HEIGHT_CM, DEFAULT_WALL_THICKNESS_CM } from './constants.js';
-import { syncFloorWalls } from './walls.js';
+import { syncFloorWalls, rebuildAllSkirtingZones } from './walls.js';
 
 export function createStateStore(defaultStateFn, validateStateFn) {
   function normalizeState(s) {
@@ -66,6 +66,9 @@ export function createStateStore(defaultStateFn, validateStateFn) {
     if (s.meta?.version === 13) {
       s = migrateV13ToV14(s);
     }
+    if (s.meta?.version === 14) {
+      s.meta.version = 15; // V14→V15: dividers/zoneSettings removed from schema
+    }
 
     if (s.tile || s.grout || s.pattern) {
       const globalTile = s.tile || {
@@ -98,13 +101,7 @@ export function createStateStore(defaultStateFn, validateStateFn) {
               }
               if (!room.excludedTiles) room.excludedTiles = [];
               if (!room.excludedSkirts) room.excludedSkirts = [];
-              if (room.exclusions && Array.isArray(room.exclusions)) {
-                for (const ex of room.exclusions) {
-                  if (ex.skirtingEnabled === undefined) {
-                    ex.skirtingEnabled = true;
-                  }
-                }
-              }
+              // skirtingEnabled on 2D exclusions is no longer used — only 3D objects affect skirting
             }
           }
         }
@@ -210,12 +207,7 @@ export function createStateStore(defaultStateFn, validateStateFn) {
             if (!room.excludedTiles) room.excludedTiles = [];
             if (!room.excludedSkirts) room.excludedSkirts = [];
             if (!Array.isArray(room.objects3d)) room.objects3d = [];
-
-            if (room.exclusions && Array.isArray(room.exclusions)) {
-              for (const ex of room.exclusions) {
-                if (ex.skirtingEnabled === undefined) ex.skirtingEnabled = true;
-              }
-            }
+            // skirtingEnabled on 2D exclusions is no longer used — only 3D objects affect skirting
 
             // Ensure room has polygonVertices (v8+ requirement)
             if (!room.polygonVertices || room.polygonVertices.length < 3) {
@@ -304,10 +296,21 @@ export function createStateStore(defaultStateFn, validateStateFn) {
         for (const wall of floor.walls || []) {
           for (const surface of wall.surfaces || []) {
             delete surface.skirting;
+            if (!Array.isArray(surface.skirtingZones)) surface.skirtingZones = [];
+          }
+        }
+        for (const room of floor.rooms || []) {
+          for (const obj of room.objects3d || []) {
+            for (const surf of obj.surfaces || []) {
+              if (surf.skirtingZone === undefined) surf.skirtingZone = null;
+            }
           }
         }
       }
     }
+
+    // Rebuild skirting zones derived from skirting config — must run after syncFloorWalls
+    rebuildAllSkirtingZones(s);
 
     return s;
   }
@@ -660,6 +663,7 @@ export function createStateStore(defaultStateFn, validateStateFn) {
     // objects3d arrays are added by normalization — no data conversion needed
     return s;
   }
+
 
   let state = normalizeState(defaultStateFn());
   let undoStack = [];

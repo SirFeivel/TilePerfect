@@ -382,6 +382,9 @@ const translations = {
       addFreeform: "Freiform-Ausschluss hinzugefügt",
       outside: "Ausschluss außerhalb Raum"
     },
+    dividers: {
+      title: "Flächen-Teiler",
+    },
     subSurface: {
       title: "Flächen-Kacheln",
       noneSelected: "– Ausschluss auswählen –",
@@ -414,6 +417,9 @@ const translations = {
       freeform: "Freiform",
       addTri: "+ Dreieck",
       addFreeform: "+ Freiform",
+      addCylinder: "+ Zylinder",
+      cylinder: "Zylinder",
+      radius: "Radius (cm)",
       faceTop: "Oberseite",
       faceSide: "Seite",
       face_front: "Vorderseite",
@@ -1082,6 +1088,9 @@ const translations = {
       addFreeform: "Freeform exclusion added",
       outside: "Exclusion outside room"
     },
+    dividers: {
+      title: "Surface Dividers",
+    },
     subSurface: {
       title: "Surface Tiles",
       noneSelected: "– select an exclusion –",
@@ -1114,6 +1123,9 @@ const translations = {
       freeform: "Freeform",
       addTri: "+ Triangle",
       addFreeform: "+ Freeform",
+      addCylinder: "+ Cylinder",
+      cylinder: "Cylinder",
+      radius: "Radius (cm)",
       faceTop: "Top",
       faceSide: "Side",
       face_front: "Front",

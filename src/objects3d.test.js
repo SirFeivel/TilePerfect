@@ -1,6 +1,7 @@
 // src/objects3d.test.js
-import { describe, it, expect } from 'vitest';
-import { prepareObj3dFaceRegion } from './objects3d.js';
+import { describe, it, expect, vi } from 'vitest';
+import { prepareObj3dFaceRegion, createObjects3DController } from './objects3d.js';
+import { getAllFloorExclusions, getObjFootprintEdges } from './geometry.js';
 
 // ── prepareObj3dFaceRegion ────────────────────────────────────────────
 
@@ -94,5 +95,127 @@ describe('prepareObj3dFaceRegion', () => {
     expect(region.heightCm).toBeCloseTo(80, 0);
     // Polygon vertices should be origin-shifted triangle, not a rectangle
     expect(region.polygonVertices).toHaveLength(3);
+  });
+});
+
+// ── Cylinder: getAllFloorExclusions ───────────────────────────────────
+
+describe('cylinder getAllFloorExclusions', () => {
+  it('cylinder is converted to a circle exclusion with _isObject3d', () => {
+    const room = {
+      exclusions: [],
+      objects3d: [{ id: 'cyl1', type: 'cylinder', cx: 100, cy: 80, r: 30, skirtingEnabled: true }],
+    };
+    const excls = getAllFloorExclusions(room);
+    expect(excls).toHaveLength(1);
+    const e = excls[0];
+    expect(e.type).toBe('circle');
+    expect(e.id).toBe('cyl1');
+    expect(e.cx).toBe(100);
+    expect(e.cy).toBe(80);
+    expect(e.r).toBe(30);
+    expect(e._isObject3d).toBe(true);
+    expect(e.skirtingEnabled).toBe(true);
+  });
+
+  it('cylinder exclusion has no tile field (not tilable)', () => {
+    const room = {
+      exclusions: [],
+      objects3d: [{ id: 'cyl1', type: 'cylinder', cx: 50, cy: 50, r: 20, skirtingEnabled: true }],
+    };
+    const excls = getAllFloorExclusions(room);
+    expect(excls[0].tile).toBeUndefined();
+  });
+});
+
+// ── Cylinder: getObjFootprintEdges ────────────────────────────────────
+
+describe('cylinder getObjFootprintEdges', () => {
+  it('returns 16 edges approximating the circle', () => {
+    const obj = { type: 'cylinder', cx: 0, cy: 0, r: 10 };
+    const edges = getObjFootprintEdges(obj);
+    expect(edges).toHaveLength(16);
+    // Each edge connects adjacent N-gon vertices
+    for (const e of edges) {
+      const len = Math.hypot(e.p2.x - e.p1.x, e.p2.y - e.p1.y);
+      expect(len).toBeGreaterThan(0);
+    }
+  });
+
+  it('all edge vertices lie on the circle circumference', () => {
+    const cx = 50, cy = 30, r = 20;
+    const obj = { type: 'cylinder', cx, cy, r };
+    const edges = getObjFootprintEdges(obj);
+    for (const e of edges) {
+      const d1 = Math.hypot(e.p1.x - cx, e.p1.y - cy);
+      const d2 = Math.hypot(e.p2.x - cx, e.p2.y - cy);
+      expect(d1).toBeCloseTo(r, 5);
+      expect(d2).toBeCloseTo(r, 5);
+    }
+  });
+});
+
+// ── Cylinder: addCylinder controller ─────────────────────────────────
+
+describe('addCylinder controller', () => {
+  function makeState() {
+    return {
+      floors: [{
+        id: 'f1',
+        rooms: [{
+          id: 'r1',
+          widthCm: 200, heightCm: 150,
+          polygonVertices: [
+            { x: 0, y: 0 }, { x: 200, y: 0 }, { x: 200, y: 150 }, { x: 0, y: 150 }
+          ],
+          exclusions: [],
+          objects3d: [],
+        }],
+      }],
+      selectedFloorId: 'f1',
+      selectedRoomId: 'r1',
+    };
+  }
+
+  it('addCylinder adds a cylinder object with correct fields', () => {
+    let state = makeState();
+    let committed = null;
+    const ctrl = createObjects3DController({
+      getState: () => state,
+      commit: (label, next) => { committed = next; state = next; },
+      getSelectedId: () => null,
+      setSelectedId: () => {},
+    });
+
+    ctrl.addCylinder();
+
+    expect(committed).not.toBeNull();
+    const room = committed.floors[0].rooms[0];
+    expect(room.objects3d).toHaveLength(1);
+    const obj = room.objects3d[0];
+    expect(obj.type).toBe('cylinder');
+    expect(typeof obj.cx).toBe('number');
+    expect(typeof obj.cy).toBe('number');
+    expect(obj.r).toBeGreaterThan(0);
+    expect(obj.heightCm).toBe(100);
+    expect(obj.skirtingEnabled).toBe(true);
+    expect(obj.surfaces).toBeUndefined();
+    console.log(`[test:addCylinder] cx=${obj.cx} cy=${obj.cy} r=${obj.r}`);
+  });
+
+  it('cylinder center is at room center', () => {
+    let state = makeState();
+    const ctrl = createObjects3DController({
+      getState: () => state,
+      commit: (label, next) => { state = next; },
+      getSelectedId: () => null,
+      setSelectedId: () => {},
+    });
+
+    ctrl.addCylinder();
+
+    const obj = state.floors[0].rooms[0].objects3d[0];
+    expect(obj.cx).toBeCloseTo(100, 0); // widthCm/2
+    expect(obj.cy).toBeCloseTo(75, 0);  // heightCm/2
   });
 });

@@ -13,9 +13,9 @@ import { t, setLanguage, getLanguage } from "./i18n.js";
 import { initMainTabs } from "./tabs.js";
 import { initFullscreen } from "./fullscreen.js";
 import polygonClipping from "polygon-clipping";
-import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts } from "./geometry.js";
+import { getRoomBounds, roomPolygon, computeAvailableArea, tilesForPreview, computeSkirtingSegments, isRectRoom, getAllFloorExclusions, computeSurfaceContacts, splitPolygonByLine, computeSurfacePolygons, validateFreeformDrop } from "./geometry.js";
 import { getRoomAbsoluteBounds, findPositionOnFreeEdge, validateFloorConnectivity, subtractOverlappingAreas } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, findWallByDoorwayId, prepareWallSurface, computeFloorWallGeometry, computeDoorwayFloorPatches, rebuildWallForRoom, DEFAULT_SURFACE_TILE, DEFAULT_SURFACE_GROUT, DEFAULT_SURFACE_PATTERN, syncFloorWalls, computeSurfaceTiles, computeSubSurfaceTiles, rebuildAllSkirtingZones, computeSkirtingZoneTiles } from "./walls.js";
 import { classifyAndExtendRooms } from "./envelope.js";
 import { wireQuickViewToggleHandlers, syncQuickViewToggleStates } from "./quick_view_toggles.js";
 import { createZoomPanController } from "./zoom-pan.js";
@@ -52,6 +52,7 @@ import {
   renderCommercialTab,
   renderExportTab
 } from "./render.js";
+import { createDividerDrawController } from "./divider-draw.js";
 import { createStructureController } from "./structure.js";
 import { createRemovalController } from "./removal.js";
 import { enforceCutoutForPresetRooms } from "./skirting_rules.js";
@@ -500,7 +501,21 @@ function prepareRoom3DData(state, room, floor, wallGeometry) {
       faceTiles[surf.face] = { tiles: faceTileResult.tiles, groutColor: faceTileResult.groutColor };
       console.log(`[main:3D-face] obj=${obj.id} face=${surf.face} tiles=${faceTileResult.tiles.length}`);
     }
-    return { ...obj, faceTiles };
+
+    // Skirting zones on 3D object faces (full-width bottom band per face)
+    const faceSkirtingZoneTiles = {};
+    for (const surf of (obj.surfaces || [])) {
+      if (!surf.skirtingZone) continue;
+      const region = prepareObj3dFaceRegion(obj, surf, allSurfaceContacts);
+      if (!region) continue;
+      const zones = computeSkirtingZoneTiles(state, [surf.skirtingZone], region.widthCm, floor, { isRemovalMode });
+      if (zones.length) {
+        faceSkirtingZoneTiles[surf.face] = zones[0];
+        console.log(`[main:3D-face-skirting] obj=${obj.id} face=${surf.face} tiles=${zones[0].tiles.length}`);
+      }
+    }
+
+    return { ...obj, faceTiles, faceSkirtingZoneTiles };
   });
 
   const floorSubSurfaces = computeSubSurfaceTiles(state, getAllFloorExclusions(room), floor, { isRemovalMode });
@@ -575,6 +590,10 @@ function prepareFloorWallData(state, floor, wallGeometry) {
       const subSurfaceTiles = computeSubSurfaceTiles(state, region.exclusions || [], floor, { isRemovalMode });
       console.log(`[main:subSurface-wall] wall=${wall.id} surf=${idx} subSurfaces=${subSurfaceTiles.length}`);
 
+      const surfaceWidthCm = region.widthCm;
+      const skirtingZoneTiles = computeSkirtingZoneTiles(state, surface.skirtingZones || [], surfaceWidthCm, floor, { isRemovalMode });
+      console.log(`[main:skirtingZones-wall] wall=${wall.id} surf=${idx} zones=${skirtingZoneTiles.length}`);
+
       const surfFromCm = surface.fromCm || 0;
       const surfToCm = surface.toCm || edgeLength;
       const tStart = edgeLength > 0 ? surfFromCm / edgeLength : 0;
@@ -607,6 +626,7 @@ function prepareFloorWallData(state, floor, wallGeometry) {
         skirtingSegments, // Skirting segments in wall surface coordinates
         skirtingHeight, // Height of skirting for 3D rendering
         subSurfaceTiles,
+        skirtingZoneTiles,
       };
     }).filter(Boolean);
 
@@ -747,6 +767,9 @@ function renderPlanningSection(state, opts) {
     getSelectedObj: obj3dCtrl.getSelectedObj,
     commitObjProps: obj3dCtrl.commitObjProps
   });
+
+  const dividerBtn = document.getElementById("quickDivider");
+  if (dividerBtn) dividerBtn.disabled = !getCurrentRoom(state);
 
   renderWarnings(state, validateState);
   if (!isDrag) renderMetrics(state);
@@ -1131,8 +1154,9 @@ function renderPlanningSection(state, opts) {
       selectedObj3dId,
       setSelectedObj3d,
       onObj3dPointerDown: obj3dDragCtrl.onObjPointerDown,
-      onObj3dResizeHandlePointerDown: obj3dDragCtrl.onResizeHandlePointerDown
+      onObj3dResizeHandlePointerDown: obj3dDragCtrl.onResizeHandlePointerDown,
     });
+    dividerDrawCtrl.reattach(); // keep snap dot / preview line on top after SVG rebuild
   }
   updateDoorButtonState();
 }
@@ -1870,6 +1894,83 @@ const obj3dCtrl = createObjects3DController({
   setSelectedId: setSelectedObj3dIdOnly
 });
 
+// Returns the surface polygon set for the current split target.
+// Wall surfaces don't have zones yet — represented as a single uncovered polygon.
+// Floor rooms use computeSurfacePolygons to include uncovered area + existing zones.
+function getTargetSurfacePolygons() {
+  const state = store.getState();
+  const floor = getCurrentFloor(state);
+  const room = getCurrentRoom(state);
+  if (!room || !floor) return [];
+  if (state.selectedWallId) {
+    const wall = floor.walls?.find(w => w.id === state.selectedWallId);
+    const surfIdx = wall?.surfaces?.findIndex(s => s.roomId === state.selectedRoomId) ?? -1;
+    if (surfIdx < 0) return [];
+    const region = prepareWallSurface(wall, surfIdx, room, floor);
+    if (!region?.polygonVertices?.length) return [];
+    console.log(`[dividers:getSurfacePolygons] wall surface verts=${region.polygonVertices.length}`);
+    return [{ id: 'wall-surface', type: 'uncovered', vertices: region.polygonVertices }];
+  }
+  const polys = computeSurfacePolygons(room);
+  console.log(`[dividers:getSurfacePolygons] floor room polys=${polys.length}`);
+  return polys;
+}
+
+function polyArea(verts) {
+  let a = 0;
+  for (let i = 0, j = verts.length - 1; i < verts.length; j = i++)
+    a += (verts[j].x + verts[i].x) * (verts[j].y - verts[i].y);
+  return Math.abs(a) / 2;
+}
+
+const dividerDrawCtrl = createDividerDrawController({
+  getSvg: () => document.getElementById("planSvg"),
+  getSurfacePolygons: getTargetSurfacePolygons,
+  onComplete: ({ p1, p2, targetPolygon }) => {
+    dividerDrawCtrl.stop();
+    document.getElementById("quickDivider")?.classList.remove("active");
+    if (!targetPolygon?.vertices?.length) { console.warn("[divider-split:onComplete] no targetPolygon — skipping"); return; }
+    const polys = splitPolygonByLine(targetPolygon.vertices, p1, p2);
+    if (!polys || polys.length < 2) { console.warn("[divider-split:onComplete] split produced <2 polygons — skipping"); return; }
+    const areas = polys.map(polyArea);
+    const smallerIdx = areas[0] <= areas[1] ? 0 : 1;
+    const largerIdx = 1 - smallerIdx;
+    const smallerPoly = polys[smallerIdx];
+    const largerPoly = polys[largerIdx];
+    console.log(`[divider-split:onComplete] target=${targetPolygon.id} type=${targetPolygon.type} areas=[${areas.map(a => a.toFixed(0)).join(",")}] smallerIdx=${smallerIdx}`);
+
+    if (targetPolygon.type === 'uncovered') {
+      // Splitting the uncovered area: just add a new blank zone
+      excl.addFreeform(smallerPoly);
+    } else {
+      // Splitting an existing zone: update that zone's vertices to the larger half,
+      // then add a new blank zone for the smaller half — single atomic commit.
+      const state = store.getState();
+      const room = getCurrentRoom(state);
+      if (!room) { console.warn("[divider-split:onComplete] no room — skipping zone split"); return; }
+      const newExclId = uuid();
+      const nextExcls = room.exclusions.map(e =>
+        e.id === targetPolygon.exclId ? { ...e, vertices: largerPoly } : e
+      ).concat([{ id: newExclId, type: 'freeform', label: '', vertices: smallerPoly }]);
+      const nextState = {
+        ...state,
+        floors: state.floors.map(f =>
+          f.id !== state.selectedFloorId ? f : {
+            ...f,
+            rooms: f.rooms.map(r => r.id !== state.selectedRoomId ? r : { ...r, exclusions: nextExcls }),
+          }
+        ),
+      };
+      console.log(`[divider-split:zoneSplit] updated exclId=${targetPolygon.exclId} largerVerts=${largerPoly.length} newExclId=${newExclId} smallerVerts=${smallerPoly.length}`);
+      store.commit("Split zone", nextState);
+    }
+  },
+  onCancel: () => {
+    dividerDrawCtrl.stop();
+    document.getElementById("quickDivider")?.classList.remove("active");
+  },
+});
+
 const structure = createStructureController({
   store,
   renderAll,
@@ -1915,6 +2016,13 @@ const dragController = createExclusionDragController({
   },
   getTarget: getExclusionTarget,
   getTargetBounds: getExclusionTargetBounds,
+  validateDrop: (nextState, exclId) => {
+    const room = getCurrentRoom(nextState);
+    if (!room) return true;
+    const { valid, reason } = validateFreeformDrop(room, exclId);
+    if (!valid) console.warn(`[drag:validateDrop] rejected exclId=${exclId} reason=${reason}`);
+    return valid;
+  },
 });
 
 const obj3dDragCtrl = createObject3DDragController({
@@ -2067,17 +2175,6 @@ function setRoomSkirtingEnabledById(roomId, enabled) {
   targetRoom.skirting = targetRoom.skirting || {};
   targetRoom.skirting.enabled = enabled;
   commitViaStore(t("skirting.changed"), next);
-}
-
-function setExclusionSkirtingEnabled(id, enabled) {
-  if (!id) return;
-  const next = deepClone(store.getState());
-  const room = getCurrentRoom(next);
-  if (!room || !room.exclusions) return;
-  const ex = room.exclusions.find(e => e.id === id);
-  if (!ex) return;
-  ex.skirtingEnabled = enabled;
-  commitViaStore(t("exclusions.changed"), next);
 }
 
 function updateExclusionInline({ id, key, value }) {
@@ -2688,13 +2785,6 @@ function updateAllTranslations() {
     const room = getCurrentRoom(state);
     if (!room) return;
 
-    if (selectedExclId) {
-      const ex = room.exclusions?.find(x => x.id === selectedExclId);
-      if (!ex) return;
-      setExclusionSkirtingEnabled(selectedExclId, ex.skirtingEnabled === false);
-      return;
-    }
-
     setRoomSkirtingEnabled(room.skirting?.enabled === false);
   });
 
@@ -3220,6 +3310,17 @@ function updateAllTranslations() {
     }
   });
 
+  // Quick divider button — toggles draw mode
+  document.getElementById("quickDivider")?.addEventListener("click", () => {
+    if (dividerDrawCtrl.isActive()) {
+      dividerDrawCtrl.stop();
+      document.getElementById("quickDivider")?.classList.remove("active");
+    } else {
+      dividerDrawCtrl.start();
+      document.getElementById("quickDivider")?.classList.add("active");
+    }
+  });
+
   // Quick add doorway button
   document.getElementById("quickAddDoorway")?.addEventListener("click", () => {
     if (selectedWallEdge !== null) {
@@ -3456,6 +3557,8 @@ function updateAllTranslations() {
         obj3dCtrl.addRect();
       } else if (type === "tri") {
         obj3dCtrl.addTri();
+      } else if (type === "cylinder") {
+        obj3dCtrl.addCylinder();
       } else if (type === "freeform") {
         const freeformBtn = item;
         freeformBtn.classList.add("active");
@@ -3498,6 +3601,9 @@ function updateAllTranslations() {
   });
   document.getElementById("btnAddObj3dTri")?.addEventListener("click", () => {
     obj3dCtrl.addTri();
+  });
+  document.getElementById("btnAddObj3dCylinder")?.addEventListener("click", () => {
+    obj3dCtrl.addCylinder();
   });
   document.getElementById("btnAddObj3dFreeform")?.addEventListener("click", () => {
     const btn = document.getElementById("btnAddObj3dFreeform");
@@ -4238,6 +4344,7 @@ function updateAllTranslations() {
       document.getElementById("quickAddObj3d"),
       document.getElementById("btnAddObj3dRect"),
       document.getElementById("btnAddObj3dTri"),
+      document.getElementById("btnAddObj3dCylinder"),
       document.getElementById("btnAddObj3dFreeform"),
     ];
     for (const btn of obj3dAddBtns) {

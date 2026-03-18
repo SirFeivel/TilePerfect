@@ -178,9 +178,9 @@ describe('render.js smoke tests', () => {
     expect(document.body.innerHTML).toContain('exP1X');
   });
 
-  it('renderExclProps renders skirting toggle for exclusion', () => {
+  it('renderExclProps does not render skirting toggle for exclusion (2D exclusions have no skirting)', () => {
     document.body.innerHTML = '<div id="exclProps"></div>';
-    const currentEx = { id: '1', type: 'rect', label: 'R1', x: 10, y: 10, w: 20, h: 20, skirtingEnabled: false };
+    const currentEx = { id: '1', type: 'rect', label: 'R1', x: 10, y: 10, w: 20, h: 20 };
     const args = {
       state: {},
       selectedExclId: '1',
@@ -191,8 +191,7 @@ describe('render.js smoke tests', () => {
     renderExclProps(args);
 
     const toggle = document.getElementById('exSkirtingEnabled');
-    expect(toggle).not.toBeNull();
-    expect(toggle.checked).toBe(false);
+    expect(toggle).toBeNull();
   });
 
 
@@ -237,9 +236,9 @@ describe('render.js smoke tests', () => {
     });
 
     const svg = document.getElementById('planSvg');
-    const skirtingGroup = Array.from(svg.querySelectorAll('g')).find(g => g.getAttribute('stroke') === 'var(--accent)');
-    expect(skirtingGroup).not.toBeNull();
-    expect(skirtingGroup.querySelectorAll('path').length).toBeGreaterThan(0);
+    // New rendering: each skirting piece is a filled band polygon path with data-skirtid attribute
+    const skirtPaths = svg.querySelectorAll('path[data-skirtid]');
+    expect(skirtPaths.length).toBeGreaterThan(0);
   });
 
   it('renderMetrics hides grand total when ratio error exists', () => {
@@ -292,7 +291,7 @@ describe('render.js smoke tests', () => {
     expect(materialsList.innerHTML).not.toContain('TOTAL'); // Since we replaced hardcoded TOTAL
   });
 
-  it('skirting stroke-dasharray uses Math.max(widthCm, heightCm) for portrait tiles', () => {
+  it('skirting piece count uses Math.max(widthCm, heightCm) for portrait tiles', () => {
     document.body.innerHTML = '<svg id="planSvg"></svg>';
     const state = defaultStateWithRoom();
     state.view.showSkirting = true;
@@ -315,14 +314,14 @@ describe('render.js smoke tests', () => {
     });
 
     const svg = document.getElementById('planSvg');
-    const paths = Array.from(svg.querySelectorAll('path[stroke-dasharray]'));
-    const dasharrays = paths.map(p => p.getAttribute('stroke-dasharray'));
+    const skirtPaths = svg.querySelectorAll('path[data-skirtid]');
 
-    // pieceLength should be Math.max(20, 40) = 40; gap = 2.5 → dasharray "37.5 2.5"
-    // It must NOT be "17.5 2.5" (which would indicate widthCm=20 was used instead)
-    const correctDash = dasharrays.some(d => d === '37.5 2.5');
-    const wrongDash = dasharrays.some(d => d === '17.5 2.5');
-    expect(correctDash).toBe(true);
-    expect(wrongDash).toBe(false);
+    // pieceLength should be Math.max(20, 40) = 40 (long side).
+    // With longSide=40 and grout=0.2: stepX=40.2
+    //   300cm walls: centerOffset=9.4 → 9 pieces each
+    //   200cm walls: centerOffset=39.8 → 5 pieces each
+    //   Total: 2*9 + 2*5 = 28 pieces
+    // If shortSide=20 were used: stepX=20.2 → 15 pieces on 300cm, 11 on 200cm → 52 total.
+    expect(skirtPaths.length).toBe(28);
   });
 });
