@@ -75,10 +75,9 @@ describe("edgeHasActiveSkirting", () => {
     expect(result).toBe(true);
   });
 
-  it("returns false when all pieces are excluded on the edge", () => {
-    // This test assumes we know the skirting piece IDs for the edge
-    // For a 400cm edge with default tile size, we'd have multiple pieces
-    // Excluding all of them should make this return false
+  it("returns true even when all pieces are excluded on the edge (offset reserved for re-activation)", () => {
+    // Excluding all pieces must NOT remove the skirting offset — the reserved space
+    // must persist so the user can click excluded (red) pieces to re-activate them.
 
     const segments = computeSkirtingSegments(room, true, floor);
 
@@ -93,7 +92,7 @@ describe("edgeHasActiveSkirting", () => {
 
     room.excludedSkirts = edge0Pieces;
     const result = edgeHasActiveSkirting(room, 0, floor);
-    expect(result).toBe(false);
+    expect(result).toBe(true); // still has skirting pieces on edge (even if all excluded)
   });
 });
 
@@ -147,7 +146,9 @@ describe("computeWallSkirtingOffset", () => {
     expect(offset).toBe(6); // Just the skirting height
   });
 
-  it("returns 0 when all skirting pieces are excluded on the edge", () => {
+  it("preserves non-zero offset even when all skirting pieces are excluded", () => {
+    // The offset must stay so that the skirting zone space is reserved and
+    // excluded pieces can be re-activated by clicking them in removal mode.
     const segments = computeSkirtingSegments(room, true, floor);
 
     // Exclude all pieces on edge 0
@@ -161,7 +162,7 @@ describe("computeWallSkirtingOffset", () => {
 
     room.excludedSkirts = edge0Pieces;
     const offset = computeWallSkirtingOffset(room, 0, floor, 0.2);
-    expect(offset).toBe(0);
+    expect(offset).toBe(6 + 2 * 0.2); // offset preserved despite all-excluded
   });
 });
 

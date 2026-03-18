@@ -22,7 +22,7 @@ import {
 import { EPSILON, DEFAULT_WALL_THICKNESS_CM, DEFAULT_WALL_HEIGHT_CM } from "./constants.js";
 import { setBaseViewBox, calculateEffectiveViewBox, getViewport } from "./viewport.js";
 import { getFloorBounds } from "./floor_geometry.js";
-import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches, computeSurfaceTiles, computeSubSurfaceTiles } from "./walls.js";
+import { getWallForEdge, getWallsForRoom, getWallsForEdge, computeFloorWallGeometry, getDoorwaysInEdgeSpace, getWallRenderHelpers, computeDoorwayFloorPatches, computeSurfaceTiles, computeSubSurfaceTiles, computeSkirtingZoneTiles } from "./walls.js";
 import { computePatternGroupOrigin, getEffectiveTileSettings, getRoomPatternGroup, isPatternGroupChild } from "./pattern-groups.js";
 
 function isCircleRoom(room) {
@@ -1814,9 +1814,10 @@ export function renderPlanSvg({
     svg.appendChild(boxG);
   }
 
+  const currentFloor = state.floors?.find(f => f.id === state.selectedFloorId);
+
   if (!skipTiles && !suppressDetails && !ratioError) {
     const isRemovalMode = Boolean(state.view?.removalMode);
-    const currentFloor = state.floors?.find(f => f.id === state.selectedFloorId);
     const effectiveSettings = getEffectiveTileSettings(currentRoom, currentFloor);
     const patternGroupOrigin = computePatternGroupOrigin(currentRoom, currentFloor);
     const tileResult = computeSurfaceTiles(state, currentRoom, currentFloor, {
@@ -1897,82 +1898,64 @@ export function renderPlanSvg({
       console.log(`[render:2D-subSurface] excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
     }
 
+
   }
 
-  // Render actual skirting segments in wall surface view
-  if (state.view?.showSkirting && currentRoom.skirtingSegments && currentRoom.skirtingSegments.length > 0 && currentRoom.skirtingConfig) {
+  // Skirting zone tiles (wall surface view only, independent of surface tiling toggle)
+  // currentRoom.skirtingZones is set by prepareWallSurface — only present in wall surface view.
+  if (state.view?.showSkirting && currentRoom.skirtingZones?.length > 0) {
     const isRemovalMode = Boolean(state.view?.removalMode);
-    const skirting = currentRoom.skirtingConfig;
-
-    const gSkirting = svgEl("g", {
-      fill: "none",
-      stroke: isExportBW ? "#111111" : "var(--accent)",
-      "stroke-width": isExportBW ? 3 : 4,
-      opacity: 0.6,
-      "stroke-linejoin": "round",
-      "pointer-events": isRemovalMode ? "auto" : "none"
-    });
-
-    const tileW = Number(skirting.tile?.widthCm) || DEFAULT_TILE_PRESET.widthCm;
-    const tileH = Number(skirting.tile?.heightCm) || DEFAULT_TILE_PRESET.heightCm;
-    const longSide = Math.max(tileW, tileH);
-    const pieceLength = skirting.type === "bought"
-      ? (Number(skirting.boughtWidthCm) || DEFAULT_SKIRTING_PRESET.lengthCm)
-      : longSide;
-    const gap = 2.5;
-
-    // Y position in wall surface coords - at the adjusted floor boundary
-    // The polygon floor is at heightCm - skirtingOffset, skirting renders there
-    const skirtingY = currentRoom.heightCm - currentRoom.skirtingOffset;
-
-    for (const seg of currentRoom.skirtingSegments) {
-      const { x1, x2, id, excluded } = seg;
-      const d = `M ${x1} ${skirtingY} L ${x2} ${skirtingY}`;
-
-      if (isRemovalMode) {
-        const hitArea = svgEl("path", {
-          d,
-          stroke: "transparent",
-          "stroke-width": 20,
-          "data-skirtid": id,
-          cursor: "pointer"
-        });
-        gSkirting.appendChild(hitArea);
+    const skirtResults = computeSkirtingZoneTiles(state, currentRoom.skirtingZones, currentRoom.widthCm, currentFloor, { isRemovalMode });
+    for (const sz of skirtResults) {
+      if (!sz.tiles.length) continue;
+      const szGroutRgb = hexToRgb(sz.groutColor);
+      // Zone local: y=0 is floor, y=h is top of zone.
+      // SVG wall surface: y=0 is ceiling, y=heightCm is floor.
+      // Transform: translate(0, heightCm) scale(1,-1) maps zone y=0→SVG floor, y=h→SVG skirtingY.
+      const szG = svgEl("g", {
+        transform: `translate(0,${currentRoom.heightCm}) scale(1,-1)`,
+        opacity: 1,
+        "pointer-events": "none",
+      });
+      for (const tile of sz.tiles) {
+        if (!tile.d) continue;
+        szG.appendChild(svgEl("path", {
+          d: tile.d,
+          fill: tile.isFull
+            ? `rgba(${szGroutRgb.r},${szGroutRgb.g},${szGroutRgb.b},0.25)`
+            : `rgba(${szGroutRgb.r},${szGroutRgb.g},${szGroutRgb.b},0.10)`,
+          stroke: `rgba(${szGroutRgb.r},${szGroutRgb.g},${szGroutRgb.b},0.80)`,
+          "stroke-width": tile.isFull ? 0.4 : 1.0,
+        }));
       }
-
-      const attrs = {
-        d,
-        "stroke-dasharray": isExportBW ? "8 4" : (excluded ? "none" : `${pieceLength - gap} ${gap}`),
-        "stroke-linecap": "butt"
-      };
-      if (id) attrs["data-skirtid"] = id;
-
-      if (excluded) {
-        if (isExportBW) {
-          gSkirting.appendChild(svgEl("path", {
-            d,
-            stroke: "#bdbdbd",
-            "stroke-width": 7,
-            "stroke-linecap": "butt"
-          }));
-        }
-        attrs.stroke = isExportBW ? "#111111" : "rgba(239,68,68,0.8)";
-        attrs["stroke-width"] = isExportBW ? 3 : 8;
-        if (!isExportBW) attrs["class"] = "skirt-excluded";
-        if (isExportBW) {
-          const cx = (x1 + x2) / 2;
-          const cy = skirtingY;
-          const size = 6;
-          gSkirting.appendChild(svgEl("line", { x1: cx - size, y1: cy - size, x2: cx + size, y2: cy + size, stroke: "#111111", "stroke-width": 1 }));
-          gSkirting.appendChild(svgEl("line", { x1: cx - size, y1: cy + size, x2: cx + size, y2: cy - size, stroke: "#111111", "stroke-width": 1 }));
-        }
-      }
-
-      gSkirting.appendChild(svgEl("path", attrs));
+      svg.appendChild(szG);
     }
 
-    svg.appendChild(gSkirting);
+    // Removal mode: overlay transparent hit paths for each skirting piece so they can be
+    // clicked to exclude. Positioned at the skirting zone band in SVG wall surface coords:
+    // y = heightCm - skirtingOffset (top of zone) to y = heightCm (floor).
+    if (isRemovalMode && currentRoom.skirtingSegments?.length > 0 && currentRoom.skirtingOffset > 0) {
+      const zoneTop = currentRoom.heightCm - currentRoom.skirtingOffset;
+      const zoneBottom = currentRoom.heightCm;
+      const gHit = svgEl("g", { "pointer-events": "auto" });
+      for (const seg of currentRoom.skirtingSegments) {
+        const { x1, x2, id, excluded } = seg;
+        const d = `M ${x1} ${zoneTop} L ${x2} ${zoneTop} L ${x2} ${zoneBottom} L ${x1} ${zoneBottom} Z`;
+        const attrs = {
+          d,
+          fill: excluded ? "rgba(239,68,68,0.2)" : "transparent",
+          stroke: excluded ? "rgba(239,68,68,0.6)" : "transparent",
+          "stroke-width": 0.3,
+          "data-skirtid": id,
+          cursor: "pointer",
+        };
+        if (excluded && !isExportBW) attrs["class"] = "skirt-excluded";
+        gHit.appendChild(svgEl("path", attrs));
+      }
+      svg.appendChild(gHit);
+    }
   }
+
 
   // Append walls group on top of tiles so wall quads cover tile bleed-through
   if (wallsGroup) svg.appendChild(wallsGroup);
@@ -2044,76 +2027,69 @@ if (showNeeds && m?.data?.debug?.tileUsage?.length && previewTiles?.length) {
     }
   }
 
-  // Skirting Visualization
-  if (state.view?.showSkirting) {
+  // Skirting Visualization — floor room view only (not wall surface view)
+  // Each skirting piece is rendered as a filled band of skirtingH width inset from the wall edge.
+  if (!roomOverride && state.view?.showSkirting) {
     const isRemovalMode = Boolean(state.view?.removalMode);
     const skirtingFloor = getCurrentFloor(state);
     const segments = computeSkirtingSegments(currentRoom, isRemovalMode, skirtingFloor);
+    console.log(`[render:2D-floor-skirting] room=${currentRoom.id} segments=${segments.length}`);
 
     if (segments.length > 0) {
-      const gSkirting = svgEl("g", { 
-        fill: "none", 
-        stroke: isExportBW ? "#111111" : "var(--accent)", 
-        "stroke-width": isExportBW ? 3 : 4, 
-        opacity: 0.6,
-        "stroke-linejoin": "round",
-        "pointer-events": isRemovalMode ? "auto" : "none"
-      });
-      
-      const skirting = currentRoom.skirting || {};
-      const pieceLength = skirting.type === "bought" 
-        ? (Number(skirting.boughtWidthCm) || DEFAULT_SKIRTING_PRESET.lengthCm)
-        : (Math.max(Number(currentRoom.tile?.widthCm) || 0, Number(currentRoom.tile?.heightCm) || 0) || DEFAULT_TILE_PRESET.widthCm);
-
-      const gap = 2.5; // visible gap in cm
+      const skirtingH = Number(currentRoom.skirting?.heightCm) || DEFAULT_SKIRTING_PRESET.heightCm;
+      const gSkirting = svgEl("g", { "pointer-events": isRemovalMode ? "auto" : "none" });
 
       for (const seg of segments) {
         const { p1, p2, id, excluded } = seg;
-        const d = `M ${p1[0]} ${p1[1]} L ${p2[0]} ${p2[1]}`;
-        
-        if (isRemovalMode) {
-          // Transparent hit area for easier clicking in removal mode
-          const hitArea = svgEl("path", {
-            d,
-            stroke: "transparent",
-            "stroke-width": 20,
-            "data-skirtid": id,
-            cursor: "pointer"
-          });
-          gSkirting.appendChild(hitArea);
-        }
+        const dx = p2[0] - p1[0];
+        const dy = p2[1] - p1[1];
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < EPSILON) continue;
+
+        // Inward normal: left-hand perpendicular of the direction vector.
+        // The outer ring from polygon-clipping is CCW in y-up math, which gives
+        // the interior on the left side: inward = (-dy/len, dx/len).
+        const inX = -dy / len;
+        const inY = dx / len;
+
+        // Band rectangle: outer edge p1→p2, inner edge offset by skirtingH inward
+        const ax = p1[0], ay = p1[1];
+        const bx = p2[0], by = p2[1];
+        const cx = bx + skirtingH * inX, cy = by + skirtingH * inY;
+        const ex = ax + skirtingH * inX, ey = ay + skirtingH * inY;
+        const d = `M ${ax} ${ay} L ${bx} ${by} L ${cx} ${cy} L ${ex} ${ey} Z`;
+
+        const fillColor = excluded
+          ? (isExportBW ? "rgba(189,189,189,0.5)" : "rgba(239,68,68,0.3)")
+          : (isExportBW ? "rgba(50,50,50,0.15)" : "rgba(59,130,246,0.25)");
+        const strokeColor = excluded
+          ? (isExportBW ? "#111111" : "rgba(239,68,68,0.8)")
+          : (isExportBW ? "#111111" : "var(--accent)");
 
         const attrs = {
           d,
-          "stroke-dasharray": isExportBW ? "8 4" : (excluded ? "none" : `${pieceLength - gap} ${gap}`),
-          "stroke-linecap": "butt"
+          fill: fillColor,
+          stroke: strokeColor,
+          "stroke-width": isExportBW ? 0.5 : 0.3,
+          "stroke-linejoin": "miter",
+          "stroke-linecap": "butt",
         };
+        // data-skirtid on the visible band — CSS removal-mode hover uses filter/opacity, not stroke-width.
         if (id) attrs["data-skirtid"] = id;
-        if (excluded) {
-          if (isExportBW) {
-            gSkirting.appendChild(svgEl("path", {
-              d,
-              stroke: "#bdbdbd",
-              "stroke-width": 7,
-              "stroke-linecap": "butt"
-            }));
-          }
-          attrs.stroke = isExportBW ? "#111111" : "rgba(239,68,68,0.8)";
-          attrs["stroke-width"] = isExportBW ? 3 : 8;
-          if (!isExportBW) attrs["class"] = "skirt-excluded";
-          if (isExportBW) {
-            const cx = (p1[0] + p2[0]) / 2;
-            const cy = (p1[1] + p2[1]) / 2;
-            const size = 6;
-            gSkirting.appendChild(svgEl("line", { x1: cx - size, y1: cy - size, x2: cx + size, y2: cy + size, stroke: "#111111", "stroke-width": 1 }));
-            gSkirting.appendChild(svgEl("line", { x1: cx - size, y1: cy + size, x2: cx + size, y2: cy - size, stroke: "#111111", "stroke-width": 1 }));
-          }
-        }
-
-        // Pieces (dashed line) - show gaps to background for better recognition
+        if (excluded && !isExportBW) attrs["class"] = "skirt-excluded";
         gSkirting.appendChild(svgEl("path", attrs));
+
+        if (excluded && isExportBW) {
+          const midX = (ax + bx) / 2;
+          const midY = (ay + by) / 2;
+          const size = 6;
+          gSkirting.appendChild(svgEl("line", { x1: midX - size, y1: midY - size, x2: midX + size, y2: midY + size, stroke: "#111111", "stroke-width": 1 }));
+          gSkirting.appendChild(svgEl("line", { x1: midX - size, y1: midY + size, x2: midX + size, y2: midY - size, stroke: "#111111", "stroke-width": 1 }));
+        }
       }
+
       svg.appendChild(gSkirting);
+      console.log(`[render:2D-floor-skirting] rendered ${segments.length} pieces h=${skirtingH}cm`);
     }
   }
 

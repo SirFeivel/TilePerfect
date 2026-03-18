@@ -18,7 +18,7 @@ import { clearMetricsCache } from './calc.js';
 import { areRoomsAdjacent } from './floor_geometry.js';
 import { computeCompositePolygon } from './composite.js';
 import { DEFAULT_WALL_HEIGHT_CM, DEFAULT_WALL_THICKNESS_CM } from './constants.js';
-import { syncFloorWalls } from './walls.js';
+import { syncFloorWalls, rebuildAllSkirtingZones } from './walls.js';
 
 export function createStateStore(defaultStateFn, validateStateFn) {
   function normalizeState(s) {
@@ -296,10 +296,21 @@ export function createStateStore(defaultStateFn, validateStateFn) {
         for (const wall of floor.walls || []) {
           for (const surface of wall.surfaces || []) {
             delete surface.skirting;
+            if (!Array.isArray(surface.skirtingZones)) surface.skirtingZones = [];
+          }
+        }
+        for (const room of floor.rooms || []) {
+          for (const obj of room.objects3d || []) {
+            for (const surf of obj.surfaces || []) {
+              if (surf.skirtingZone === undefined) surf.skirtingZone = null;
+            }
           }
         }
       }
     }
+
+    // Rebuild skirting zones derived from skirting config — must run after syncFloorWalls
+    rebuildAllSkirtingZones(s);
 
     return s;
   }

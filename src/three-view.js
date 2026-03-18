@@ -70,7 +70,7 @@ function parseHexColor(hex) {
  * surfaceVerts[0..3] map to: A@ground, B@ground, B@height, A@height.
  * hStart/hEnd allow per-edge height interpolation for sloped walls.
  */
-function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd) {
+function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd, yFloor = 0) {
   if (!surfaceVerts || surfaceVerts.length < 4) {
     console.log(`[three-view] mapper: NULL (surfaceVerts=${surfaceVerts?.length ?? 0})`);
     return null;
@@ -91,7 +91,7 @@ function createWallMapper(surfaceVerts, ax, az, bx, bz, hStart, hEnd) {
     const h = hStart + (hEnd - hStart) * t;
     return {
       x: ax + t * (bx - ax),
-      y: s * h,
+      y: yFloor + s * (h - yFloor),
       z: az + t * (bz - az),
     };
   };
@@ -1205,7 +1205,7 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
     // Render tiles for each surface
     for (let surfIdx = 0; surfIdx < wallDesc.surfaces.length; surfIdx++) {
       const surf = wallDesc.surfaces[surfIdx];
-      if (!surf.tiles?.length && !surf.exclusions?.length) continue;
+      if (!surf.tiles?.length && !surf.exclusions?.length && !surf.skirtingZoneTiles?.length) continue;
 
       // Owner surface maps to inner face, guest surface maps to outer face
       const isOwner = surf.roomId === wallDesc.roomEdge?.roomId;
@@ -1224,11 +1224,13 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         y: faceStart.y + tf * (faceEnd.y - faceStart.y),
       };
 
+      const skirtOff = surf.skirtingOffset || 0;
       const mapper = createWallMapper(
         surf.surfaceVerts,
         surfStart.x, surfStart.y,
         surfEnd.x, surfEnd.y,
-        surf.hStart, surf.hEnd
+        surf.hStart, surf.hEnd,
+        skirtOff
       );
       if (!mapper) { console.log(`[three-view]   surface[${surfIdx}] mapper=NULL → skip`); continue; }
 
@@ -1279,44 +1281,41 @@ export function createThreeViewController({ canvas, onWallDoubleClick, onRoomDou
         console.log(`[three-view:subSurface-wall] excl=${ss.exclusionId} tiles=${ss.tiles.length}`);
       }
 
-      // Render actual skirting segments in 3D
-      if (surf.skirtingOffset > 0 && surf.skirtingSegments && surf.skirtingSegments.length > 0) {
-        const skirtingHeight = surf.skirtingHeight || 6;
-        const skirtMapper = createOffsetMapper(mapper, nx, nz, SURFACE_SKIRTING_OFFSET);
+      // Render skirting tiling surface
+      // Zone tiles are in zone-local space: x unchanged, y=0=floor, y=h=top of skirting.
+      // surfaceVerts[0].y is the polygon y of the tileable region's bottom (= top of skirting zone).
+      // mapper maps that point to y_3D=skirtOff (not 0), so zoneMapper subtracts skirtOff to
+      // bring y_3D=0 back to the physical floor.
+      if (surf.skirtingZoneTiles?.length) {
+        const yFloor = surf.surfaceVerts[0].y;
+        const skirtH = surf.skirtingHeight || 6;
+        for (const zone of surf.skirtingZoneTiles) {
+          if (!zone.tiles.length) continue;
+          // Translate zone-local y to wall-surface polygon y, then apply skirting Z offset.
+          // mapper has yFloor=skirtOff baked in, so output y_3D = skirtOff + sy.
+          // Subtract skirtOff to bring skirting zone bottom to y_3D=0 (physical floor).
+          const zoneMapper = (sx, sy) => { const p = mapper(sx, yFloor - sy); return { x: p.x, y: p.y - skirtOff, z: p.z }; };
+          const skirtTileMapper = createOffsetMapper(zoneMapper, nx, nz, SURFACE_SKIRTING_OFFSET);
 
-        for (const segment of surf.skirtingSegments) {
-          const { x1, x2, excluded } = segment;
-
-          // Create quad for this skirting piece
-          const segVerts = [
-            { x: x1, y: surf.surfaceVerts[0].y },  // bottom-left (floor level)
-            { x: x2, y: surf.surfaceVerts[0].y },  // bottom-right
-            { x: x2, y: surf.surfaceVerts[0].y - skirtingHeight },  // top-right
-            { x: x1, y: surf.surfaceVerts[0].y - skirtingHeight },  // top-left
+          // Grout background for this skirting zone strip
+          const zoneVerts = [
+            { x: zone.x1, y: 0 },
+            { x: zone.x2, y: 0 },
+            { x: zone.x2, y: skirtH },
+            { x: zone.x1, y: skirtH },
           ];
+          const groutMesh = createGroutQuad(zoneVerts, zoneMapper, nx, nz, zone.groutColor);
+          if (groutMesh) scene.add(groutMesh);
 
-          const seg3D = segVerts.map(v => skirtMapper(v.x, v.y));
-
-          const segGeo = new THREE.BufferGeometry();
-          const positions = new Float32Array(seg3D.flatMap(p => [p.x, p.y, p.z]));
-          segGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          segGeo.setIndex([0, 1, 2, 0, 2, 3]);
-
-          // Use accent color for active skirting, red for excluded
-          const color = excluded ? 0xEF4444 : 0x7AA2FF;
-          const opacity = excluded ? 0.8 : 0.9;
-
-          const segMat = new THREE.MeshBasicMaterial({
-            color,
-            opacity,
-            transparent: true,
-            side: THREE.DoubleSide,
-            depthTest: true,
-            depthWrite: false,
+          const { meshes, lines } = renderSurface3D({
+            tiles: zone.tiles,
+            exclusions: [],
+            groutColor: zone.groutColor,
+            mapper: skirtTileMapper,
           });
-
-          const segMesh = new THREE.Mesh(segGeo, segMat);
-          scene.add(segMesh);
+          for (const m of meshes) scene.add(m);
+          for (const l of lines) scene.add(l);
+          console.log(`[three-view:skirtingZone] surf=${surfIdx} zone=${zone.zoneIdx} tiles=${zone.tiles.length}`);
         }
       }
     }

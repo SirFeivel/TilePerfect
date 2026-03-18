@@ -200,6 +200,9 @@ export function computeSkirtingSegments(room, includeExcluded = false, floor = n
   const pieceLength = skirting.type === "bought"
     ? (Number(skirting.boughtWidthCm) || DEFAULT_SKIRTING_PRESET.lengthCm)
     : longSide;
+  // Grout width determines tile step; pieces must use same step as visual tiles
+  const groutW = Number(room.grout?.widthCm) || 0;
+  const stepX = pieceLength + groutW;
 
   // Build doorway intervals per polygon edge for fast lookup
   const doorwayIntervals = buildDoorwayIntervals(room, floor);
@@ -232,29 +235,52 @@ export function computeSkirtingSegments(room, includeExcluded = false, floor = n
         const unitDx = dx / wallLength;
         const unitDy = dy / wallLength;
 
+        // Center-align pieces to match the visual tile layout produced by computeSkirtingZoneTiles.
+        // The visual renderer uses preset="center" + originOverride={x: wallLen/2}, which shifts
+        // the anchor by -tw/2: anchorX = wallLen/2 - pieceLength/2.
+        // Steps use (pieceLength + grout) so piece boundaries match tile boundaries exactly.
+        const anchor = wallLength / 2 - pieceLength / 2;
+        const centerOffset = ((anchor % stepX) + stepX) % stepX; // positive modulo
+        const hasLeftCut = centerOffset > EPSILON;
+        const indexOffset = hasLeftCut ? 1 : 0; // p0 reserved for left cut when it exists
+
         for (const [startDist, endDist] of overlaps) {
-          const startIdx = Math.floor(startDist / pieceLength);
-          const endIdx = Math.floor((endDist - EPSILON) / pieceLength);
+          // Left cut: [0, centerOffset] → p0 (only when centerOffset > 0)
+          if (hasLeftCut && startDist < centerOffset && endDist > 0) {
+            const pieceStart = Math.max(startDist, 0);
+            const pieceEnd = Math.min(endDist, centerOffset);
+            if (pieceEnd - pieceStart > EPSILON) {
+              const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
+              const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
+              const pieceId = `${wallId}-p0`;
+              const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
+              if (includeExcluded || !isExcluded) {
+                segments.push({ p1: segP1, p2: segP2, length: pieceEnd - pieceStart, id: pieceId, excluded: isExcluded });
+              }
+            }
+          }
 
-          for (let j = startIdx; j <= endIdx; j++) {
-            const pieceStart = Math.max(startDist, j * pieceLength);
-            const pieceEnd = Math.min(endDist, (j + 1) * pieceLength);
-            if (pieceEnd - pieceStart <= EPSILON) continue;
+          // Full pieces and right cut: starting from centerOffset, step = stepX
+          if (endDist > centerOffset) {
+            const relStart = Math.max(startDist, centerOffset) - centerOffset;
+            const relEnd = endDist - centerOffset;
+            const kStart = Math.max(0, Math.floor(relStart / stepX));
+            const kEnd = Math.floor((relEnd - EPSILON) / stepX);
 
-            const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
-            const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
-            const pieceId = `${wallId}-p${j}`;
+            for (let k = kStart; k <= kEnd; k++) {
+              const pieceStart = Math.max(startDist, centerOffset + k * stepX);
+              const pieceEnd = Math.min(endDist, Math.min(wallLength, centerOffset + (k + 1) * stepX));
+              if (pieceEnd - pieceStart <= EPSILON) continue;
 
-            const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
-            if (!includeExcluded && isExcluded) continue;
-
-            segments.push({
-              p1: segP1,
-              p2: segP2,
-              length: pieceEnd - pieceStart,
-              id: pieceId,
-              excluded: isExcluded
-            });
+              const j = k + indexOffset;
+              const segP1 = [p1[0] + unitDx * pieceStart, p1[1] + unitDy * pieceStart];
+              const segP2 = [p1[0] + unitDx * pieceEnd, p1[1] + unitDy * pieceEnd];
+              const pieceId = `${wallId}-p${j}`;
+              const isExcluded = Boolean(room.excludedSkirts?.includes(pieceId));
+              if (includeExcluded || !isExcluded) {
+                segments.push({ p1: segP1, p2: segP2, length: pieceEnd - pieceStart, id: pieceId, excluded: isExcluded });
+              }
+            }
           }
         }
       }
