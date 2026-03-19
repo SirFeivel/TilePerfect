@@ -320,6 +320,28 @@ body{
   min-height: 0;
 }
 
+/* ==================== FOOTER ==================== */
+.app-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 20px;
+  background: linear-gradient(180deg, rgba(11,18,32,.95), rgba(8,14,26,.98));
+  border-top: 1px solid var(--line);
+  color: rgba(148,163,184,0.6);
+  font-size: 10px;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial;
+  letter-spacing: 0.02em;
+  z-index: 100;
+  user-select: none;
+  pointer-events: none;
+}
+
 /* ==================== MAIN NAVIGATION ==================== */
 .main-nav {
   display: flex;
