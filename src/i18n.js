@@ -651,6 +651,7 @@ const translations = {
     debug: {
       title: "Debug",
       sectionOptions: "Debug Optionen",
+      enableLogging: "Konsolenausgabe aktivieren",
       showNeeds: "Reststück-Bedarf anzeigen",
       showWalls: "Wände anzeigen (2D)",
       changed: "Debug geändert"
@@ -1364,6 +1365,7 @@ const translations = {
     debug: {
       title: "Debug",
       sectionOptions: "Debug Options",
+      enableLogging: "Enable console logging",
       showNeeds: "Show leftover needs",
       showWalls: "Show walls (2D)",
       changed: "Debug changed"

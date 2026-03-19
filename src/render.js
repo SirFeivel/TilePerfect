@@ -1933,9 +1933,9 @@ export function renderPlanSvg({
         if (!tile.d) continue;
         ssG.appendChild(svgEl("path", {
           d: tile.d,
-          fill: tile.isFull ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)",
-          stroke: `rgba(${ssGroutRgb.r},${ssGroutRgb.g},${ssGroutRgb.b},0.50)`,
-          "stroke-width": tile.isFull ? 0.5 : 1.2,
+          fill: isExportBW ? "none" : (tile.isFull ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.08)"),
+          stroke: isExportBW ? "#222222" : `rgba(${ssGroutRgb.r},${ssGroutRgb.g},${ssGroutRgb.b},0.50)`,
+          "stroke-width": isExportBW ? 0.5 : (tile.isFull ? 0.5 : 1.2),
         }));
       }
       svg.appendChild(ssG);

@@ -1,5 +1,7 @@
 // src/main.js
 import "./style.css";
+import { initLogger } from "./logger.js";
+initLogger(); // disable console.log by default; toggled via Debug Panel
 import { computePlanMetrics, getRoomPricing } from "./calc.js";
 import { isInlineEditing } from "./ui_state.js";
 import { validateState } from "./validation.js";
