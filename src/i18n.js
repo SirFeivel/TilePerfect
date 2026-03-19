@@ -1,7 +1,7 @@
 const translations = {
   de: {
     app: {
-      title: "TilePerfect [ALPHA]",
+      title: "TilePerfect BETA",
       subtitle: "Professional Tile Layout Planner",
       autosave: "Autosave"
     },
@@ -715,7 +715,7 @@ const translations = {
   },
   en: {
     app: {
-      title: "TilePerfect [ALPHA]",
+      title: "TilePerfect BETA",
       subtitle: "Professional Tile Layout Planner",
       autosave: "Autosave"
     },
