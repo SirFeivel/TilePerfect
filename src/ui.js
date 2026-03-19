@@ -1,5 +1,6 @@
 // src/ui.js
 import { downloadText, safeParseJSON, getCurrentRoom, getCurrentFloor, getSelectedWall, uuid, getDefaultPricing, getDefaultTilePresetTemplate, DEFAULT_TILE_PRESET, DEFAULT_PRICING } from "./core.js";
+import { setLoggingEnabled } from "./logger.js";
 import { getWallForEdge, getWallsForEdge, findWallByDoorwayId, computeFloorWallGeometry, edgeOffsetToWallOffset } from "./walls.js";
 import { t } from "./i18n.js";
 import { computeProjectTotals } from "./calc.js";
@@ -1267,7 +1268,10 @@ export function bindUI({
     commitFromTilePatternInputs(t("waste.optimizeChanged"))
   );
 
-  // Debug toggle
+  // Debug toggles
+  document.getElementById("debugEnableLogging")?.addEventListener("change", (e) =>
+    setLoggingEnabled(e.target.checked)
+  );
   document.getElementById("debugShowNeeds")?.addEventListener("change", () =>
     commitFromTilePatternInputs(t("debug.changed"))
   );

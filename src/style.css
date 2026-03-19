@@ -277,9 +277,9 @@ body{
 .debug-panel {
   position: fixed;
   right: 20px;
-  bottom: 20px;
+  top: calc(var(--topbar-height) + 8px);
   width: min(520px, calc(100vw - 40px));
-  max-height: 70vh;
+  max-height: calc(100vh - var(--topbar-height) - 28px);
   display: flex;
   flex-direction: column;
   background: var(--panel);
@@ -316,7 +316,8 @@ body{
   display: flex;
   flex-direction: column;
   gap: 12px;
-  overflow: auto;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 /* ==================== MAIN NAVIGATION ==================== */
